@@ -2,13 +2,13 @@
 <rect x="0.5" y="0.5" width="1199" height="353" rx="14" fill="#f6f8fa" stroke="#d0d7de"/>
 <line x1="36" y1="98" x2="1164" y2="98" stroke="#1f2328" stroke-width="2"/>
 <text x="36" y="76" font-family="Georgia, 'Times New Roman', serif" font-size="34" fill="#1f2328" font-weight="bold" text-anchor="start">terraform-base</text>
-<text x="36" y="116" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, 'Liberation Mono', monospace" font-size="15" fill="#57606a" font-weight="normal" text-anchor="start">One YAML file per project. 33 Terraform files that read it. Nothing clicked in a console.</text>
+<text x="36" y="116" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, 'Liberation Mono', monospace" font-size="15" fill="#57606a" font-weight="normal" text-anchor="start">One YAML file per environment. 42 Terraform files that read it. Nothing clicked in a console.</text>
 <rect x="36" y="146" width="112" height="56" rx="8" fill="#ffffff" stroke="#d8dee4"/>
 <text x="50" y="167" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, 'Liberation Mono', monospace" font-size="10" fill="#57606a" font-weight="normal" text-anchor="start">WORKSPACES</text>
-<text x="50" y="188" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, 'Liberation Mono', monospace" font-size="15" fill="#1f2328" font-weight="bold" text-anchor="start">3 live</text>
+<text x="50" y="188" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, 'Liberation Mono', monospace" font-size="15" fill="#1f2328" font-weight="bold" text-anchor="start">3</text>
 <rect x="160" y="146" width="95.2" height="56" rx="8" fill="#ffffff" stroke="#d8dee4"/>
 <text x="174" y="167" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, 'Liberation Mono', monospace" font-size="10" fill="#57606a" font-weight="normal" text-anchor="start">GCP.*.TF</text>
-<text x="174" y="188" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, 'Liberation Mono', monospace" font-size="15" fill="#1f2328" font-weight="bold" text-anchor="start">30</text>
+<text x="174" y="188" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, 'Liberation Mono', monospace" font-size="15" fill="#1f2328" font-weight="bold" text-anchor="start">39</text>
 <rect x="267.2" y="146" width="120.4" height="56" rx="8" fill="#ffffff" stroke="#d8dee4"/>
 <text x="281.2" y="167" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, 'Liberation Mono', monospace" font-size="10" fill="#57606a" font-weight="normal" text-anchor="start">ORACLE.*.TF</text>
 <text x="281.2" y="188" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, 'Liberation Mono', monospace" font-size="15" fill="#1f2328" font-weight="bold" text-anchor="start">3</text>

@@ -15,7 +15,7 @@
 #         - "cloudbuild"          # shorthand for the project's Cloud Build SAs
 #         - "serviceAccount:..."  # or any literal IAM member
 #
-# Absent from a workspace, `try(..., {})` makes the whole file a no-op — the other two
+# Absent from a workspace, `try(..., {})` makes the whole file a no-op; the other two
 # workspaces are unaffected.
 #
 # Also the home of repositories made by hand (or by Cloud Functions / `gcloud run deploy
@@ -28,9 +28,10 @@
 #       description: "..."                # only if it has one today
 #       immutable_tags: false             # only if it has a docker_config today
 #
-# An adopted repository keeps its description and labels: the import must declare what is
-# there, and the only change the plan may show is the cleanup policy. Removing an adopted
-# entry from the yaml plans a DESTROY of the repository and every image in it — the apply
+# An adopted repository keeps its description and its own labels: the import must declare
+# what is there. The plan shows the cleanup policy and, in place, the provider default
+# labels (common_labels, providers.tf) added next to the labels it has. Removing an adopted
+# entry from the yaml plans a DESTROY of the repository and every image in it. The apply
 # procedure stops on destroys; take it out of state with a `removed` block instead.
 
 locals {
@@ -44,7 +45,7 @@ locals {
           repo_id = repo_id
           member = (
             member == "cloudbuild"
-            ? "serviceAccount:${google_service_account.cloudbuild.email}"
+            ? "serviceAccount:${local.cloudbuild_sa_email}"
             : member
           )
         }
@@ -70,9 +71,7 @@ resource "google_artifact_registry_repository" "standalone" {
   description   = try(each.value.description, try(each.value.adopt, false) ? null : "Managed by terraform")
   format        = try(each.value.format, "DOCKER")
 
-  labels = try(each.value.adopt, false) ? {} : {
-    managed_by = "terraform"
-  }
+  labels = try(each.value.adopt, false) ? {} : local.common_labels
 
   # Declared only when the yaml says so: an adopted repository that has the block must
   # keep it, or the plan never converges.
@@ -138,12 +137,12 @@ resource "google_artifact_registry_repository_iam_member" "standalone_legacy_clo
   location   = google_artifact_registry_repository.standalone[each.key].location
   repository = google_artifact_registry_repository.standalone[each.key].name
   role       = "roles/artifactregistry.writer"
-  member     = format("serviceAccount:%s@cloudbuild.gserviceaccount.com", local.settings.project.number)
+  member     = format("serviceAccount:%s@cloudbuild.gserviceaccount.com", local.project_number)
 }
 
 # Readers: Cloud Run pulls as the job's own service account, and those are created in
 # gcp.jobs.tf. Rather than enumerate them, grant the project's default compute and run
-# agents plus any explicit reader — the same posture the per-service module takes.
+# agents plus any explicit reader, the same posture the per-service module takes.
 resource "google_artifact_registry_repository_iam_member" "standalone_readers" {
   for_each = {
     for pair in flatten([

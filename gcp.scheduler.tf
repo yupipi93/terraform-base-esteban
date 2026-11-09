@@ -19,8 +19,8 @@ resource "google_service_account" "scheduler_sa" {
 # Grant the Scheduler Service Account permission to execute the target job (managed SAs
 # only). TWO roles, and the second is not optional here.
 #
-# `roles/run.invoker` grants `run.jobs.run`. It does NOT grant `run.jobs.runWithOverrides`
-# — and every request this file sends carries an `overrides` body, so every request is a
+# `roles/run.invoker` grants `run.jobs.run`. It does NOT grant `run.jobs.runWithOverrides`,
+# and every request this file sends carries an `overrides` body, so every request is a
 # runWithOverrides. A scheduler SA holding only run.invoker therefore gets a flat 403 with
 # no hint as to which permission is missing:
 #
@@ -81,14 +81,14 @@ resource "google_cloud_scheduler_job" "scheduler_jobs" {
   #
   # WHY IT MATTERS, measured on a nightly database backup job: the v1 endpoint is
   # `.../apis/run.googleapis.com/v1/namespaces/<project>/jobs/<job>:run`, and it resolves
-  # permission against the NAMESPACE — i.e. the project. A `roles/run.invoker` binding on
+  # permission against the NAMESPACE, i.e. the project. A `roles/run.invoker` binding on
   # the job itself is invisible to it. The scheduler had exactly that binding, confirmed in
   # `gcloud run jobs get-iam-policy`, and every attempt still came back
   # `PERMISSION_DENIED ... Original HTTP response code number = 403`.
   #
   # The only way to make v1 work is a project-wide run.invoker, which is why the older
   # entry here uses the default compute account. v2 checks IAM on the job resource, so a
-  # per-scheduler service account that can invoke exactly one job is enough — which is the
+  # per-scheduler service account that can invoke exactly one job is enough, which is the
   # posture worth having, not a workaround.
   http_target {
     http_method = "POST"
@@ -102,7 +102,7 @@ resource "google_cloud_scheduler_job" "scheduler_jobs" {
       service_account_email = try(each.value.external_sa, google_service_account.scheduler_sa[each.key].email)
     }
 
-    # Cloud Run Job overrides. The two APIs spell the same field differently — v1 takes
+    # Cloud Run Job overrides. The two APIs spell the same field differently: v1 takes
     # snake_case through the Knative shim, v2 is a normal Google JSON API and wants
     # camelCase. Sending the wrong one is silently ignored, not rejected, which is the
     # worst of both worlds.

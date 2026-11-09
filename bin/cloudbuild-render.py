@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Show the pipeline a service actually builds with — and prove Terraform agrees.
+"""Show the pipeline a service actually builds with, and prove Terraform agrees.
 
 `cloudbuild_files/cloudbuild.yaml` is one file shared by every build in the project.
 What a given service ends up running depends on its capability flags (which steps
@@ -13,7 +13,7 @@ script exists to remove:
 
 Terraform is the source of truth; this is a reader for it. `--check-plan` is what keeps
 the two honest: it takes `terraform show -json <plan>` and fails if a single planned
-trigger disagrees with what this file renders — same steps, same order, same waitFor,
+trigger disagrees with what this file renders: same steps, same order, same waitFor,
 same substitutions.
 """
 
@@ -35,7 +35,7 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 # --------------------------------------------------------------------------- settings
 def load_settings(root: str, workspace: str) -> dict:
-    """default.yaml overlaid by <workspace>.yaml — the merge locals.tf does."""
+    """default.yaml overlaid by <workspace>.yaml: the merge locals.tf does."""
     with open(os.path.join(root, "settings", "default.yaml")) as fh:
         settings = yaml.safe_load(fh) or {}
     path = os.path.join(root, "settings", f"{workspace}.yaml")
@@ -59,9 +59,27 @@ def _resolve_image(ref: str, settings: dict, python: bool = False) -> str:
     return ref if "." in ref.split("/")[0] else f"{host}/{ref}"
 
 
+def binauth_enabled(settings: dict) -> bool:
+    return bool((settings.get("binary_authorization") or {}).get("enabled", False))
+
+
+def binauth_names(settings: dict, workspace: str) -> dict:
+    """The attestor and key version gcp.binary_auth.tf builds from names."""
+    medium = f"{settings['client']['name']}-{workspace}"
+    project = settings["project"]["id"]
+    return {
+        "_BINAUTH_ATTESTOR": f"projects/{project}/attestors/{medium}-attestor",
+        "_BINAUTH_KMS_KEY_VERSION": (
+            f"projects/{project}/locations/{settings['region_name']}/keyRings/{medium}-binauth"
+            "/cryptoKeys/attestor-signer/cryptoKeyVersions/1"
+        ),
+    }
+
+
 def collect_configs(settings: dict, workspace: str) -> dict:
-    """Every build declared in the workspace, normalised — gcp.cloudbuild.tf's locals."""
+    """Every build declared in the workspace, normalised: gcp.cloudbuild.tf's locals."""
     base = settings["client"]["name"]
+    sign_image = binauth_enabled(settings)
     app = settings.get("app") or {}
     sources = []
     for key, value in (settings.get("cloudbuild") or {}).items():
@@ -95,6 +113,7 @@ def collect_configs(settings: dict, workspace: str) -> dict:
             image_base = _resolve_image(image_base, settings, python="/simple" in image_base)
 
         deploy = cb.get("deploy", True)
+        scan = cb.get("scan") or {}
         # A service may live outside the project's region; a job never does.
         deploy_region = ((owner.get("cloudrun") or {}).get("region") or settings["region_name"]) if kind == "app" else settings["region_name"]
         configs[key] = {
@@ -118,9 +137,16 @@ def collect_configs(settings: dict, workspace: str) -> dict:
             "substitutions": cb.get("substitutions") or {},
             "capabilities": {
                 "ar_token": bool(cb.get("artifact_registry_token", False)),
+                "scan_secrets": bool(scan.get("secrets", False)) and not bool(scan.get("secrets_blocking", False)),
+                "scan_secrets_blocking": bool(scan.get("secrets_blocking", False)),
+                "scan_sast": bool(scan.get("sast", False)) and not bool(scan.get("sast_blocking", False)),
+                "scan_sast_blocking": bool(scan.get("sast_blocking", False)),
+                "scan_deps": bool(scan.get("deps", False)) and not bool(scan.get("deps_blocking", False)),
+                "scan_deps_blocking": bool(scan.get("deps_blocking", False)),
                 "deploy_service": kind != "job" and deploy,
                 "deploy_job": kind == "job" and deploy,
                 "update_companion_job": kind != "job" and cb.get("job_name") is not None,
+                "sign_image": sign_image,
             },
             "job_name": prefixed if kind == "job" else cb.get("job_name"),
             "deploy_region": deploy_region,
@@ -167,6 +193,8 @@ def substitutions(config: dict, settings: dict, workspace: str, bucket: str = "<
         if config["job_name"]:
             subs["_JOB_NAME"] = config["job_name"]
             subs["_JOB_REGION"] = config["job_region"]
+        if config["capabilities"]["sign_image"]:
+            subs.update(binauth_names(settings, workspace))
     else:
         subs["_PYTHON_REPO_URL"] = f"https://{registry_host_python(settings)}/{config['prefixed_name']}/"
         subs["_ARTIFACTS_BUCKET"] = f"gs://{bucket}/artifacts"
@@ -204,7 +232,7 @@ def rewrite_wait_for(steps: list) -> list:
 
 def apply_substitutions(text: str, subs: dict) -> str:
     """What Cloud Build does to the step text. Unset custom substitutions become empty
-    strings — ALLOW_LOOSE is forced on every triggered build."""
+    strings: ALLOW_LOOSE is forced on every triggered build."""
 
     def one(match):
         name = match.group(1) or match.group(2)
@@ -262,7 +290,7 @@ def render(config: dict, settings: dict, workspace: str, root: str, resolve: boo
 def print_human(config: dict, result: dict) -> None:
     print(f"── {config['key']}  ({config['type']})  trigger: {config['trigger']}")
     if "external" in result:
-        print(f"   pipeline: {result['external']} — read from the application repository")
+        print(f"   pipeline: {result['external']} (read from the application repository)")
         print("   substitutions:")
         for k, v in sorted(result["substitutions"].items()):
             print(f"     {k} = {v}")
@@ -343,11 +371,11 @@ def check_plan(plan_path: str, configs: dict, settings: dict, workspace: str, ro
                 problems.append(f"{key}: {want.get('id')} args differ from the plan")
 
     if problems:
-        print(f"FAIL — {len(problems)} disagreement(s) between the plan and this renderer:")
+        print(f"FAIL: {len(problems)} disagreement(s) between the plan and this renderer:")
         for p in problems:
             print(f"  - {p}")
         return 1
-    print(f"PASS — {checked} trigger(s) in the plan render exactly as this script does")
+    print(f"PASS: {checked} trigger(s) in the plan render exactly as this script does")
     return 0
 
 

@@ -1,152 +1,117 @@
-# Automated Billing Budget Control
+# Billing budget and the optional billing shutdown
 
-## 🎯 Overview
+A `budget` section creates a Cloud Billing budget for the project, with email
+alerts at the thresholds you list. With `enable_auto_stop: true` it also deploys a
+Cloud Function that disables billing on the project once the spend reaches the
+budget. That stops every billable service in it, so it is off unless asked for,
+and the reference workspaces (`dev`, `stg`, `pre`, `pro`) keep it off.
 
-This system automatically protects your project from unexpected costs by disabling billing when spending exceeds your monthly budget limit. It monitors your project costs in real-time and takes immediate action when thresholds are crossed.
+## Configuration
 
-## 🏗️ Architecture Diagram
-
-```
-┌─────────────────────┐    ┌─────────────────────┐    ┌─────────────────────┐
-│   Google Cloud      │    │     Pub/Sub Topic   │    │   Cloud Function    │
-│   Billing Budget    │───▶│  Budget Alerts      │───▶│   Stop Billing      │
-│                     │    │                     │    │                     │
-└─────────────────────┘    └─────────────────────┘    └─────────────────────┘
-                                                                    │
-                                                                    ▼
-                                                       ┌─────────────────────┐
-                                                       │   Cloud Billing     │
-                                                       │   API - Disable     │
-                                                       │   Project Billing   │
-                                                       └─────────────────────┘
-```
-
-## 🔧 How It Works
-
-### 1. Budget Monitor
-Google Cloud continuously monitors your project spending against your monthly budget limit. The budget is configured with your billing account and watches all costs in your project.
-
-When spending reaches certain percentages of your budget (like 50%, 90%, or 100%), Google automatically sends alert messages.
-
-### 2. Alert Processing
-Budget alerts are sent to a Pub/Sub topic called `budget-notifications`. These messages contain important information like:
-
-```json
-{
-  "costAmount": 85.50,
-  "budgetAmount": 100.0,
-  "alertThresholdExceeded": 0.9,
-  "projectId": "your-project-id"
-}
-```
-
-The key fields are current spending amount, your budget limit, which threshold was crossed, and which project is affected.
-
-### 3. Automatic Response
-A Cloud Function listens to these alert messages. When it receives an alert, it checks if spending has reached 100% of the budget. If yes, it immediately calls the Google Cloud Billing API to disable billing for your project.
-
-The function uses this simple logic:
-```python
-if current_spending >= budget_limit:
-    disable_billing_for_project()
-```
-
-## 🔐 Security
-
-The system uses a dedicated service account with minimal permissions. It can only:
-- Read your project's billing status
-- Disable billing for your specific project
-- Nothing else
-
-This ensures the function cannot accidentally affect other projects or enable billing.
-
-## 🧪 Testing the System
-
-You can test the system manually by sending messages to the Pub/Sub topic to simulate budget alerts.
-
-### Test Below Threshold (No Action)
-```bash
-# Simulate spending below budget limit
-gcloud pubsub topics publish budget-notifications \
-  --project=your-project-id \
-  --message='{
-    "costAmount": 50.0,
-    "budgetAmount": 100.0,
-    "alertThresholdExceeded": 0.5,
-    "projectId": "your-project-id"
-  }'
-```
-
-The function will log that the budget is not exceeded and take no action.
-
-### Test Billing Disable (Over Threshold)
-```bash
-# Simulate spending over budget limit
-gcloud pubsub topics publish budget-notifications \
-  --project=your-project-id \
-  --message='{
-    "costAmount": 105.0,
-    "budgetAmount": 100.0,
-    "alertThresholdExceeded": 1.0,
-    "projectId": "your-project-id"
-  }'
-```
-
-**⚠️ WARNING**: This will actually disable billing if the function is working correctly.
-
-### Re-enable billing manually
-```bash
-# Re-enable billing acount (needs billing admin permissions)
-gcloud billing projects link proyect-name --billing-account=BILLINS_ACOUNT_NUMBER
-```
-
-
-## 🚨 What Happens When Triggered
-
-When billing is disabled, all your services will immediately stop running:
-- Your web applications become unavailable
-- Database connections are terminated  
-- All other billable services stop
-
-## 💡 Recovery
-
-If billing gets disabled, you need to:
-
-1. **Re-enable billing manually** in the Google Cloud Console
-2. **Increase your budget** in the configuration file if needed
-3. **Wait for services to restart** (this may take a few minutes)
-
-### Emergency Commands
-
-Disable the automation temporarily:
-```bash
-# Remove the function's permission to disable billing
-gcloud projects remove-iam-policy-binding your-project-id \
-  --member="serviceAccount:pre-stop-billing-sa@your-project-id.iam.gserviceaccount.com" \
-  --role="roles/billing.admin"
-```
-
-Re-enable billing manually:
-```bash
-# Link your billing account back to the project
-gcloud billing projects link your-project-id \
-  --billing-account=your-billing-account-id
-```
-
-## ⚙️ Configuration
-
-The system is configured in your `settings/pre.yaml` file:
+`gcp.billing.tf` reads the `budget` section of `settings/<workspace>.yaml`:
 
 ```yaml
 budget:
-  billing_account: "your-billing-account-id"
-  amount: your-monthly-limit
-  currency_code: "EUR" 
+  billing_account: "000000-000000-000000"
+  amount: 100
   alert_spent_percents:
-    - 0.5  # Warning at 50%
-    - 0.9  # Warning at 90%  
-    - 1.0  # Disable at 100%
+    - 0.5
+    - 0.9
+    - 1.0
+  enable_auto_stop: false  # true deploys the function that disables billing
 ```
 
+| Key | What it does |
+|---|---|
+| `billing_account` | The billing account that pays for the project. Without it no budget is created. |
+| `amount` | The monthly limit, in EUR: the currency is fixed in `gcp.billing.tf`, and Cloud Billing refuses a budget whose currency differs from the billing account's. |
+| `alert_spent_percents` | One alert rule per entry, on the current spend (`0.9` is 90 %). |
+| `enable_auto_stop` | Default `false`. `true` deploys the shutdown described below. |
 
-**⚠️ Important**: This system will completely shut down your project when the budget is exceeded. Make sure your budget is set appropriately for your expected usage.
+The budget watches this project only. The alerts go to the billing account's
+budget recipients (billing administrators and users by default), not to
+`security.alerts_email`.
+
+## How the shutdown works
+
+```
+┌─────────────────────┐    ┌─────────────────────────────┐    ┌──────────────────────────┐
+│  Cloud Billing      │    │  Pub/Sub topic              │    │  Cloud Function (gen 2)  │
+│  budget             │───▶│  <client>-budget-           │───▶│  <client>-stop-billing   │
+│                     │    │  notifications              │    │                          │
+└─────────────────────┘    └─────────────────────────────┘    └────────────┬─────────────┘
+                                                                           │
+                                                                           ▼
+                                                              ┌──────────────────────────┐
+                                                              │  Cloud Billing API:      │
+                                                              │  unlink the project      │
+                                                              └──────────────────────────┘
+```
+
+With `enable_auto_stop: true` the stack adds:
+
+- a Pub/Sub topic `<client.name>-budget-notifications`, set as the budget's
+  programmatic notification target. Cloud Billing publishes the budget status
+  to it several times a day, not only when a threshold is crossed;
+- a bucket `<client.name>-<workspace>-stop-billing-code` with the zipped source
+  of `cloud_function_source/stop_billing/`;
+- the function `<client.name>-stop-billing` (Python 3.13, one instance at most),
+  triggered by each message on the topic;
+- its service account `<client.name>-stop-billing-sa`, with
+  `roles/billing.projectManager`, `roles/serviceusage.serviceUsageConsumer` and
+  `roles/cloudfunctions.developer` on the project.
+
+The function reads `costAmount` and `budgetAmount` from the message. When the
+cost is at or above the budget and billing is still on, it calls the Cloud
+Billing API with an empty billing account, which unlinks the project:
+
+```python
+if cost_amount >= budget_amount:
+    # projects.updateBillingInfo(name=f"projects/{project_id}", body={"billingAccountName": ""})
+```
+
+Below the budget it logs the figures and does nothing. Thresholds under 100 %
+only send the usual alerts.
+
+## What happens when it fires
+
+Billing off stops the project's paid resources: Cloud Run, Cloud SQL, Redis and
+the load balancer stop serving, and Google may delete resources of a project
+that stays without billing.
+
+To recover:
+
+1. Find out why the spend grew, and raise `budget.amount` if the limit was too
+   low (or turn `enable_auto_stop` off).
+2. Link the billing account again. It needs billing permissions on the account
+   (`roles/billing.user` or more) and on the project:
+
+   ```bash
+   gcloud billing projects link <project-id> --billing-account=<billing-account-id>
+   ```
+
+3. Wait for the services to come back; that can take a few minutes.
+
+To stop the function from acting without a Terraform change, remove its role:
+
+```bash
+gcloud projects remove-iam-policy-binding <project-id> \
+  --member="serviceAccount:<client.name>-stop-billing-sa@<project-id>.iam.gserviceaccount.com" \
+  --role="roles/billing.projectManager"
+```
+
+The next apply grants it again; set `enable_auto_stop: false` to make it stick.
+
+## Testing
+
+Publish a message to the topic by hand. Below the budget nothing happens:
+
+```bash
+gcloud pubsub topics publish <client.name>-budget-notifications \
+  --project=<project-id> \
+  --message='{"costAmount": 50.0, "budgetAmount": 100.0, "alertThresholdExceeded": 0.5}'
+```
+
+The function logs that the budget is not exceeded. A message with
+`costAmount` at or above `budgetAmount` really disables billing on the project:
+only send it to a project you can afford to stop.

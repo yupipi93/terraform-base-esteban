@@ -39,9 +39,7 @@ resource "google_secret_manager_secret" "run_secrets" {
   project   = local.settings.project.id
   secret_id = each.key
 
-  labels = {
-    managed_by = "terraform"
-  }
+  labels = local.common_labels
 
   replication {
     user_managed {
@@ -52,9 +50,10 @@ resource "google_secret_manager_secret" "run_secrets" {
   }
 }
 
-# Create secret versions with placeholder values
+# Placeholder versions. A key present in secrets/<workspace>/<service>.enc.yaml
+# is created by run_secrets_sops instead, and Terraform keeps that value.
 resource "google_secret_manager_secret_version" "run_secrets_version" {
-  for_each = local.secrets_map
+  for_each = local.secrets_placeholder
 
   secret      = google_secret_manager_secret.run_secrets[each.key].id
   secret_data = "PLACEHOLDER_VALUE_TO_BE_REPLACED"
@@ -63,6 +62,17 @@ resource "google_secret_manager_secret_version" "run_secrets_version" {
   lifecycle {
     ignore_changes = [secret_data]
   }
+
+  depends_on = [
+    google_secret_manager_secret.run_secrets
+  ]
+}
+
+resource "google_secret_manager_secret_version" "run_secrets_sops" {
+  for_each = local.secrets_from_sops
+
+  secret      = google_secret_manager_secret.run_secrets[each.key].id
+  secret_data = data.sops_file.service[each.value.service_name].data[each.value.secret_name]
 
   depends_on = [
     google_secret_manager_secret.run_secrets

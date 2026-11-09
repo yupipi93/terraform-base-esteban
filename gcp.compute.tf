@@ -27,7 +27,7 @@ resource "google_compute_instance" "vm" {
   zone                = each.value.zone
   project             = local.settings.project.id
   description         = try(each.value.description, null)
-  deletion_protection = try(each.value.deletion_protection, false)
+  deletion_protection = try(each.value.deletion_protection, local.workspace == "pro")
   tags                = try(each.value.tags, [])
   can_ip_forward      = try(each.value.can_ip_forward, false)
   enable_display      = try(each.value.enable_display, false)
@@ -46,7 +46,7 @@ resource "google_compute_instance" "vm" {
 
   # --- Network interface ---
   network_interface {
-    network    = try(each.value.network, "default") == "default" ? data.google_compute_network.default[0].self_link : module.network.network_self_link
+    network    = try(each.value.network, "default") == "default" ? data.google_compute_network.default[0].self_link : try(module.network[0].network_self_link, null)
     subnetwork = try(each.value.subnetwork, null) == "default" ? "projects/${local.settings.project.id}/regions/${each.value.region}/subnetworks/default" : null
   }
 

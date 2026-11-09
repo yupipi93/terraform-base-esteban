@@ -5,7 +5,7 @@
 # --config cloudbuild_files/cloudbuild.yaml` rejects this file. Render it instead with
 #     bin/cloudbuild-render.py <workspace> <service>
 #
-# It carries NO service-specific knowledge — no build args, no image names, no timeouts,
+# It carries NO service-specific knowledge: no build args, no image names, no timeouts,
 # no framework flags. Everything that differs between services arrives as a substitution
 # Terraform computes from settings/<workspace>.yaml (docs/cloudbuild-pipeline.md):
 #
@@ -15,9 +15,12 @@
 #   _DOCKERFILE_PATH     cloudbuild.dockerfile_path
 #   _BUILD_CONTEXT_PATH  cloudbuild.build_context_path
 #   _PREFIXED_NAME       the Cloud Run service to deploy
-#   _DEPLOY_REGION       where that service lives — NOT always the project's region
+#   _DEPLOY_REGION       where that service lives, NOT always the project's region
 #   _JOB_NAME            the Cloud Run job to update
 #   _JOB_REGION          where that job lives
+#   _BINAUTH_ATTESTOR    the attestor that signs the pushed digest, only with
+#                        binary_authorization.enabled
+#   _BINAUTH_KMS_KEY_VERSION  the KMS key version it signs with, same condition
 #
 # `x-when: [flag]` keeps a step only when every listed capability is on for that service
 # (local.cloudbuild_capabilities in gcp.cloudbuild.tf). Terraform rewrites the `waitFor`
@@ -25,7 +28,7 @@
 # flag that is not a real capability is a plan error, never a step that silently stops
 # running.
 #
-# Mind the dollars: Cloud Build reads `$WORD` anywhere in this file — comments included —
+# Mind the dollars: Cloud Build reads `$WORD` anywhere in this file (comments included)
 # as a substitution. Shell variables here are lowercase, and a literal dollar for the
 # shell is written `$$`.
 steps:
@@ -41,10 +44,40 @@ steps:
       - "-c"
       - "gcloud auth print-access-token --scopes=https://www.googleapis.com/auth/cloud-platform > /workspace/access_token.txt"
 
+  # Source scans. Off until cloudbuild.scan says otherwise. A blocking flag
+  # wins over the report-only flag of the same scanner. Images are pinned.
+  - id: "scan-secrets"
+    x-when: ["scan_secrets"]
+    name: "ghcr.io/gitleaks/gitleaks:v8.30.1"
+    args: ["detect", "--source", "${_BUILD_CONTEXT_PATH}", "--no-git", "--redact", "--exit-code", "0"]
+    allowFailure: true
+  - id: "scan-secrets-blocking"
+    x-when: ["scan_secrets_blocking"]
+    name: "ghcr.io/gitleaks/gitleaks:v8.30.1"
+    args: ["detect", "--source", "${_BUILD_CONTEXT_PATH}", "--no-git", "--redact", "--exit-code", "1"]
+  - id: "scan-sast"
+    x-when: ["scan_sast"]
+    name: "ghcr.io/semgrep/semgrep:1.184.0"
+    args: ["scan", "--config", "p/default", "--metrics", "off", "${_BUILD_CONTEXT_PATH}"]
+    allowFailure: true
+  - id: "scan-sast-blocking"
+    x-when: ["scan_sast_blocking"]
+    name: "ghcr.io/semgrep/semgrep:1.184.0"
+    args: ["scan", "--config", "p/default", "--error", "--metrics", "off", "${_BUILD_CONTEXT_PATH}"]
+  - id: "scan-deps"
+    x-when: ["scan_deps"]
+    name: "ghcr.io/aquasecurity/trivy:0.76.2"
+    args: ["fs", "--severity", "HIGH,CRITICAL", "--exit-code", "0", "--no-progress", "${_BUILD_CONTEXT_PATH}"]
+    allowFailure: true
+  - id: "scan-deps-blocking"
+    x-when: ["scan_deps_blocking"]
+    name: "ghcr.io/aquasecurity/trivy:0.76.2"
+    args: ["fs", "--severity", "HIGH,CRITICAL", "--exit-code", "1", "--no-progress", "${_BUILD_CONTEXT_PATH}"]
+
   - id: "build"
     name: "gcr.io/cloud-builders/docker"
     entrypoint: "bash"
-    waitFor: ["ar-token"]
+    waitFor: ["ar-token", "scan-secrets", "scan-secrets-blocking", "scan-sast", "scan-sast-blocking", "scan-deps", "scan-deps-blocking"]
     env:
       - "DOCKER_BUILDKIT=1"
     args:
@@ -67,11 +100,28 @@ steps:
       - "${_IMAGE}"
       - "--all-tags"
 
+  # Binary Authorization only admits a digest the attestor has signed, so the image is
+  # signed before anything deploys it. Signing the digest, not the tag: a tag can move.
+  - id: "sign-image"
+    x-when: ["sign_image"]
+    name: "gcr.io/cloud-builders/gcloud"
+    entrypoint: "bash"
+    waitFor: ["push"]
+    args:
+      - "-c"
+      - |
+        set -euo pipefail
+        digest="$$(gcloud artifacts docker images describe ${_IMAGE}:${SHORT_SHA} --format='value(image_summary.digest)')"
+        gcloud beta container binauthz attestations sign-and-create \
+          --artifact-url="${_IMAGE}@$${digest}" \
+          --attestor="${_BINAUTH_ATTESTOR}" \
+          --keyversion="${_BINAUTH_KMS_KEY_VERSION}"
+
   - id: "deploy-service"
     x-when: ["deploy_service"]
     name: "gcr.io/cloud-builders/gcloud"
     entrypoint: "gcloud"
-    waitFor: ["push"]
+    waitFor: ["push", "sign-image"]
     args:
       - "run"
       - "deploy"
@@ -90,7 +140,7 @@ steps:
     x-when: ["deploy_job"]
     name: "gcr.io/cloud-builders/gcloud"
     entrypoint: "gcloud"
-    waitFor: ["push"]
+    waitFor: ["push", "sign-image"]
     args:
       - "run"
       - "jobs"
@@ -110,7 +160,7 @@ steps:
     x-when: ["update_companion_job"]
     name: "gcr.io/cloud-builders/gcloud"
     entrypoint: "gcloud"
-    waitFor: ["push"]
+    waitFor: ["push", "sign-image"]
     allowFailure: true
     args:
       - "run"

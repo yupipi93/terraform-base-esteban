@@ -1,0 +1,111 @@
+name: terraform
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+# A new push to the same branch or pull request cancels the run it supersedes.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  fmt:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+      - uses: hashicorp/setup-terraform@v4
+        with:
+          terraform_version: "1.14.5"
+          terraform_wrapper: false
+      - name: Format the root files and the tests
+        run: find . \( -name '*.tf' -o -name '*.tftest.hcl' \) -not -path './modules/*' -print0 | xargs -0 terraform fmt -check -diff
+
+  lint:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+      - uses: terraform-linters/setup-tflint@v6
+        with:
+          tflint_version: v0.66.0
+      # .tflint.hcl pins the google ruleset; the token only lifts the GitHub
+      # API rate limit of the plugin download.
+      - name: Install the tflint plugins
+        run: tflint --init
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+      - name: Lint the root module
+        run: tflint --format compact --minimum-failure-severity=warning
+
+  test:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+      - uses: hashicorp/setup-terraform@v4
+        with:
+          terraform_version: "1.14.5"
+          terraform_wrapper: false
+      - name: Init without a backend
+        run: terraform init -backend=false -input=false
+      # tests/*.tftest.hcl plan the default, dev and pro shapes with mock
+      # providers: no GCP login, no API call, a few seconds.
+      - name: Terraform test
+        run: terraform test
+
+  validate:
+    name: validate (${{ matrix.workspace }})
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        workspace: [default, dev, stg, pre, pro]
+    env:
+      # locals.tf reads settings/<terraform.workspace>.yaml, so each workspace
+      # validates a different merge of the settings files.
+      TF_WORKSPACE: ${{ matrix.workspace }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: hashicorp/setup-terraform@v4
+        with:
+          terraform_version: "1.14.5"
+          terraform_wrapper: false
+      - name: Init without a backend
+        if: matrix.workspace == 'default'
+        run: terraform init -backend=false -input=false
+      - name: Init with a local backend
+        if: matrix.workspace != 'default'
+        # Workspaces need a backend. The override replaces the gcs backend of
+        # versions.tf, and init creates the TF_WORKSPACE workspace in it.
+        run: |
+          printf 'terraform {\n  backend "local" {}\n}\n' > backend_override.tf
+          terraform init -input=false
+      - name: Check the selected workspace
+        run: test "$(terraform workspace show)" = "$TF_WORKSPACE"
+      - name: Validate
+        run: terraform validate
+
+  scripts:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+      - name: Install PyYAML and jsonschema
+        run: python3 -m pip install --quiet pyyaml jsonschema
+      - name: Cloud Build render self-test
+        run: python3 bin/cloudbuild-render-test.py
+      - name: Validate the settings files
+        run: python3 bin/validate-settings.py
+      # The built-in validator is what a contributor without jsonschema runs;
+      # it has to agree with jsonschema on the same files.
+      - name: Validate the settings files (built-in validator)
+        run: python3 bin/validate-settings.py
+        env:
+          SETTINGS_SCHEMA_ENGINE: builtin
+      - name: Fail on an open p0
+        run: python3 bin/audit-terraform.py --fail-on p0

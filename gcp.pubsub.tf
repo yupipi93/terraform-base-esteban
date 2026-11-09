@@ -5,26 +5,27 @@
 # {env}.{domain}.{context}.{event}
 
 resource "google_project_service_identity" "pubsub_agent" {
+  count    = length(try(local.settings.pubsub.topics, {})) > 0 ? 1 : 0
   provider = google-beta
   service  = "pubsub.googleapis.com"
   project  = local.settings.project.id
 }
 
 locals {
-  # Procesamiento de topics desde la configuración
+  # Topics read from the settings
   topic_config = try(local.settings.pubsub.topics, {})
 
-  # Generación automática de nombres de topics
+  # Topic names built from the naming convention
   topic_names = {
     for k, v in local.topic_config : k => join(".", [
-      terraform.workspace, # {env}
-      v.domain,            # {domain}
-      v.context,           # {context}
-      v.event              # {event}
+      local.workspace, # {env}
+      v.domain,        # {domain}
+      v.context,       # {context}
+      v.event          # {event}
     ])
   }
 
-  # Procesamiento de suscripciones
+  # Subscriptions, flattened per topic
   subscriptions = {
     for topic_key, topic in local.topic_config : topic_key => {
       for idx, sub in try(topic.subscriptions, []) : "${topic_key}-${sub.name}" => merge(
@@ -42,11 +43,11 @@ locals {
   dead_letter_topics = {
     for topic_key, topic in local.topic_config : "${topic_key}-deadletter" => {
       name           = "${local.topic_names[topic_key]}-deadletter"
-      retention_days = 14 # Doble que el topic principal
+      retention_days = 14 # twice the main topic's retention
     } if can(topic.subscriptions[*].dead_letter)
   }
 
-  # Procesamiento de permisos por topic
+  # Publisher and subscriber permissions per topic
   topic_permissions = {
     for topic_key, topic in local.topic_config : topic_key => {
       publishers = [
@@ -63,7 +64,7 @@ locals {
       ]
     }
   }
-  # Buscamos los nombres de los SERVICIOS que tienen suscripciones.
+  # Names of the SERVICES that receive push subscriptions.
   oidc_service_names = distinct(flatten([
     for topic_key, topic in local.topic_config : [
       for sub in try(topic.subscriptions, []) : try(sub.service_name, sub.name)
@@ -72,7 +73,7 @@ locals {
   ]))
 }
 
-# Topics principales
+# Main topics
 resource "google_pubsub_topic" "topics" {
   for_each = try(local.topic_names, {})
 
@@ -81,13 +82,14 @@ resource "google_pubsub_topic" "topics" {
 
   message_retention_duration = try(local.settings.pubsub.message_retention, "604800s") # default 7 days
 
-  labels = {
-    environment = terraform.workspace
+  labels = merge(local.common_labels, {
+    environment = local.workspace
     domain      = local.topic_config[each.key].domain
     context     = local.topic_config[each.key].context
     event       = local.topic_config[each.key].event
-    managed_by  = "terraform"
-  }
+  })
+
+  depends_on = [google_project_service_identity.pubsub_agent]
 }
 
 # Dead Letter Topics
@@ -99,24 +101,25 @@ resource "google_pubsub_topic" "dead_letter" {
 
   message_retention_duration = "${each.value.retention_days * 86400}s" # days to seconds
 
-  labels = {
-    environment = terraform.workspace
+  labels = merge(local.common_labels, {
+    environment = local.workspace
     type        = "dead-letter"
-    managed_by  = "terraform"
-  }
+  })
+
+  depends_on = [google_project_service_identity.pubsub_agent]
 }
-#Permisos para que Pub/Sub firme tokens
+# Lets the Pub/Sub service agent sign OIDC tokens for push subscriptions
 resource "google_service_account_iam_member" "pubsub_token_creator" {
   for_each = toset(local.oidc_service_names)
 
   service_account_id = "projects/${local.settings.project.id}/serviceAccounts/${local.base_name}-${each.value}-sa@${local.settings.project.id}.iam.gserviceaccount.com"
   role               = "roles/iam.serviceAccountTokenCreator"
-  member             = "serviceAccount:${google_project_service_identity.pubsub_agent.email}"
+  member             = "serviceAccount:${try(one(google_project_service_identity.pubsub_agent[*].email), "unused@example.com")}"
 
   depends_on = [module.cloud_run_services]
 }
 
-# Suscripciones
+# Subscriptions
 resource "google_pubsub_subscription" "subscriptions" {
   for_each = merge([
     for topic_key, subs in local.subscriptions : subs
@@ -129,9 +132,7 @@ resource "google_pubsub_subscription" "subscriptions" {
   ack_deadline_seconds       = try(each.value.ack_deadline_seconds, 600)
   message_retention_duration = try(local.settings.pubsub.message_retention, "604800s") # default 7 days
 
-  labels = {
-    managed_by = "terraform"
-  }
+  labels = local.common_labels
 
   dynamic "push_config" {
     for_each = each.value.type == "push" ? [1] : []
@@ -142,7 +143,7 @@ resource "google_pubsub_subscription" "subscriptions" {
         x-goog-version = "v1"
       }
 
-      # Configuración de autenticación OIDC
+      # OIDC authentication for the push endpoint
       oidc_token {
         service_account_email = "${local.base_name}-${try(each.value.service_name, each.value.name)}-sa@${local.settings.project.id}.iam.gserviceaccount.com"
         audience              = local.settings.pubsub.audience
@@ -170,7 +171,7 @@ resource "google_pubsub_subscription" "subscriptions" {
   ]
 }
 
-# IAM binding para publishers
+# IAM binding for publishers
 resource "google_pubsub_topic_iam_member" "topic_publishers" {
   for_each = merge([
     for topic_key, perms in local.topic_permissions : {
@@ -190,7 +191,7 @@ resource "google_pubsub_topic_iam_member" "topic_publishers" {
   depends_on = [google_pubsub_topic.topics]
 }
 
-# IAM binding para subscribers
+# IAM binding for subscribers
 resource "google_pubsub_subscription_iam_member" "subscription_subscribers" {
   for_each = merge([
     for topic_key, perms in local.topic_permissions :

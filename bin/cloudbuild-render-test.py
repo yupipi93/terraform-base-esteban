@@ -96,6 +96,47 @@ app:
         image: "tt-house-jobs/lonely:latest"
 """
 
+# Same builds, Binary Authorization on: every pushed image is signed first.
+SIGNED_WORKSPACE = """
+project:
+  id: "test-project"
+  number: "1"
+binary_authorization:
+  enabled: true
+repo_providers:
+  default: "github"
+app:
+  service:
+    plain:
+      name: "plain"
+      cloudbuild:
+        repo_name: "plain-repo"
+        inline: true
+    companion:
+      name: "companion"
+      cloudbuild:
+        repo_name: "companion-repo"
+        inline: true
+        job_name: "tt-companion-tasks"
+    nodeploy:
+      name: "nodeploy"
+      cloudbuild:
+        repo_name: "base-repo"
+        inline: true
+        deploy: false
+    external:
+      name: "external"
+      cloudbuild:
+        repo_name: "ext-repo"
+        inline: false
+  job:
+    lonely:
+      name: "lonely"
+      cloudbuild:
+        repo_name: "job-repo"
+        inline: true
+"""
+
 failures = []
 
 
@@ -117,6 +158,8 @@ def main() -> int:
             fh.write(DEFAULTS)
         with open(os.path.join(root, "settings", "tw.yaml"), "w") as fh:
             fh.write(WORKSPACE)
+        with open(os.path.join(root, "settings", "tb.yaml"), "w") as fh:
+            fh.write(SIGNED_WORKSPACE)
         shutil.copy(
             os.path.join(ROOT, "cloudbuild_files", "cloudbuild.yaml"),
             os.path.join(root, "cloudbuild_files", "cloudbuild.yaml"),
@@ -208,14 +251,58 @@ def main() -> int:
         check("builtins are left for Cloud Build, unknown custom ones vanish",
               text, "img:${SHORT_SHA} tw x")
 
-        # 7. A typo in x-when is an error, not a step that quietly stops running.
+        # 7. Binary Authorization: the pushed digest is signed before any rollout, and
+        # nothing about signing exists while it is off.
+        check("signing is off without binary_authorization.enabled",
+              any(c["capabilities"]["sign_image"] for c in configs.values()), False)
+        check("...so nothing waits for a sign step",
+              rendered["plain"]["steps"][2]["waitFor"], ["push"])
+        check("...and no signing substitution reaches the build",
+              sorted(k for k in subs if k.startswith("_BINAUTH")), [])
+
+        signed_settings = cb.load_settings(root, "tb")
+        signed_configs = cb.collect_configs(signed_settings, "tb")
+        signed = {k: cb.render(v, signed_settings, "tb", root)
+                  for k, v in signed_configs.items() if v["inline"]}
+        check("a signed service signs after the push and deploys after the signature",
+              step_ids(signed["plain"]), ["build", "push", "sign-image", "deploy-service"])
+        check("a companion job is repointed only at a signed digest",
+              step_ids(signed["companion"]), ["build", "push", "sign-image", "deploy-service", "update-companion-job"])
+        check("an image nobody deploys is signed too",
+              step_ids(signed["nodeploy"]), ["build", "push", "sign-image"])
+        check("a job is signed before it is updated",
+              step_ids(signed["lonely"]), ["build", "push", "sign-image", "deploy-job"])
+        check("sign-image waits for the push",
+              signed["plain"]["steps"][2]["waitFor"], ["push"])
+        check("the deploy waits for the signature",
+              signed["plain"]["steps"][3]["waitFor"], ["push", "sign-image"])
+        check("the companion job waits for the signature",
+              signed["companion"]["steps"][4]["waitFor"], ["push", "sign-image"])
+        signed_subs = cb.substitutions(signed_configs["plain"], signed_settings, "tb")
+        check("the attestor is the one gcp.binary_auth.tf creates",
+              signed_subs["_BINAUTH_ATTESTOR"], "projects/test-project/attestors/tt-tb-attestor")
+        check("the key version is the one the attestor trusts",
+              signed_subs["_BINAUTH_KMS_KEY_VERSION"],
+              "projects/test-project/locations/europe-west1/keyRings/tt-tb-binauth"
+              "/cryptoKeys/attestor-signer/cryptoKeyVersions/1")
+        sign_args = "\n".join(signed["plain"]["steps"][2]["args"])
+        check("the digest is signed, never the tag",
+              "--artifact-url=\"europe-west1-docker.pkg.dev/test-project/tt-plain/plain@$${digest}\"" in sign_args, True)
+        check("the step names the attestor and the key version",
+              "--attestor=\"projects/test-project/attestors/tt-tb-attestor\"" in sign_args
+              and "cryptoKeyVersions/1\"" in sign_args, True)
+        check("a pipeline we cannot read is not handed the signing substitutions",
+              sorted(k for k in cb.substitutions(signed_configs["external"], signed_settings, "tb")
+                     if k.startswith("_BINAUTH")), [])
+
+        # 8. A typo in x-when is an error, not a step that quietly stops running.
         try:
             cb.filter_steps({"steps": [{"id": "s", "x-when": ["no_such_flag"]}]}, {"deploy_service": True})
             failures.append("an unknown x-when flag was accepted")
         except KeyError:
             pass
 
-        # 8. Every capability the pipeline mentions is one Terraform computes.
+        # 9. Every capability the pipeline mentions is one Terraform computes.
         import yaml
         with open(os.path.join(ROOT, "cloudbuild_files", "cloudbuild.yaml")) as fh:
             pipeline = yaml.safe_load(fh)
@@ -228,11 +315,11 @@ def main() -> int:
         shutil.rmtree(root, ignore_errors=True)
 
     if failures:
-        print(f"FAIL — {len(failures)} check(s):")
+        print(f"FAIL: {len(failures)} check(s):")
         for f in failures:
             print(f"  ✗ {f}")
         return 1
-    print("PASS — cloudbuild renderer and pipeline agree on every check")
+    print("PASS: cloudbuild renderer and pipeline agree on every check")
     return 0
 
 

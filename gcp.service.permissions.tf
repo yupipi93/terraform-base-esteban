@@ -71,4 +71,3 @@ resource "google_project_iam_member" "service_cloudsql_role" {
 
   depends_on = [module.cloud_run_services]
 }
-

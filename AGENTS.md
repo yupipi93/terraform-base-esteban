@@ -2,7 +2,7 @@
 
 Read `README.md` and `docs/PROJECT_STRUCTURE.md` before changing anything. This file adds
 the conventions an agent must follow when it sets up or extends a project from this
-template.
+template. The production readiness backlog is `docs/audit/BACKLOG.md`.
 
 ## GCP resource hierarchy
 
@@ -52,7 +52,10 @@ IAM boundary.
 The `common` folder holds the ops project. It is the `project_sys` in
 `settings/default.yaml` and it owns:
 
-- the Terraform state bucket, `<org>-ops-<suffix>-tfstate`, referenced in `versions.tf`;
+- the Terraform state bucket, `<org>-ops-<suffix>-tfstate`, named in the gitignored
+  `backend.hcl` (copied from `backend.hcl.example`) and passed with
+  `terraform init -backend-config=backend.hcl`. `versions.tf` keeps an empty
+  `backend "gcs" {}`; never write the bucket there;
 - anything shared by all environments, such as base images or monitoring.
 
 Never put the state bucket inside an environment project. A mistake in `dev` must not be
@@ -84,7 +87,11 @@ gcloud billing projects link "$ORG-$APP-dev-$SUFFIX" --billing-account=<billing-
 - `settings/default.yaml`: `project_sys` points to the ops project, and `client.name` is the
   app prefix.
 - One file per environment: `settings/dev.yaml`, `settings/stg.yaml`, `settings/pro.yaml`,
-  each with its own `project.id`, `project.name` and `project.number`.
+  each with its own `project.id` and `project.name`. `project.number` is optional:
+  without it, or at the all-zero placeholder, `gcp.project.tf` reads it from the project.
+- One `backend.hcl` per clone, from `backend.hcl.example`: `bucket` is the ops project's
+  state bucket, `prefix` optional. First `terraform init -backend-config=backend.hcl`,
+  then the workspaces.
 - One workspace per environment, with the same name: `terraform workspace new stg`.
 - Cloud Build tag patterns default to `^<workspace>-...`, so release tags look like
   `pro-2026010101`.
@@ -95,5 +102,57 @@ gcloud billing projects link "$ORG-$APP-dev-$SUFFIX" --billing-account=<billing-
   read.
 - Never use `-target`. Run a full plan.
 - Never create resources in the console. Add them to the YAML, or import them.
-- Validate with a real workspace, for example `TF_WORKSPACE=dev terraform validate`. The
-  `default` workspace has no `project` key and does not validate by design.
+- Validate with `terraform validate` on the default workspace, or on `dev`, `stg`
+  or `pro`. The default file carries placeholder project values so CI can validate
+  without a GCP login. Replace them before any plan of that workspace.
+
+## The production readiness backlog
+
+Workspaces are `settings/<workspace>.yaml` merged over `settings/default.yaml`. Root
+files are `gcp.<type>.tf` or `gcp.<type>.<part>.tf`, with no hyphens. Modules under
+`modules/` are vendored snapshots named `gcp_<name>_v<major.minor>`. Do not edit them in
+place, except for comment or documentation fixes that change no behaviour: a change is a
+copy with the next version.
+
+Read `docs/audit/OPERATING.md`. Run:
+
+```bash
+python3 bin/audit-terraform.py
+```
+
+Take the item `python3 bin/audit-terraform.py --next` prints. Skip every item marked
+accepted. Those exist so a later session does not add a platform feature this template
+does not need: a VPC per module, a `module:` map of products, a scanner that needs its
+own instance (Harbor, SonarQube), a row-deletion job, a night stop for Cloud SQL, a
+dependency bot, VPC Service Controls, Model Armor, Cloud Identity groups, a full IAM role
+matrix, a build-failure chat notifier, CMEK on every resource, or replacing the hello
+placeholder image.
+
+Keep every tracked file generic: no company, client, product or person names, no real
+emails, project ids or billing ids. The auditor's `AUD-PUB-LEAKS` item scans for them;
+a fork adds its own private terms in a gitignored `.audit-denylist`.
+
+One backlog id, one branch, one pull request. Refresh the backlog in that same pull
+request:
+
+```bash
+python3 bin/audit-terraform.py --write
+```
+
+The item you closed has to print `done`. Format Terraform you touched, then
+`terraform init -backend=false` and `terraform validate` when `.tf` files changed.
+
+Rules that are easy to break:
+
+- `merge()` in `locals.tf` is shallow. Do not override `active-apis` in an environment
+  file. A feature's APIs go in `local.feature_apis` (`gcp.enabled.apis.tf`), one-off
+  APIs in the workspace's `extra-apis`.
+- One shared VPC, and only when `settings.network.services_cidr` is set. Never one
+  network per service.
+- Services live under `app.service` and jobs under `app.job`.
+- No secret values in YAML, HCL, or commit messages. Names and Secret Manager ids only.
+- A missing settings section creates nothing. If you add a `for_each`, wrap the map in
+  `try(..., {})`.
+- Read the workspace name from `local.workspace`, never `terraform.workspace`: the
+  tests under `tests/` set it with `settings_workspace` (`docs/audit/OPERATING.md`,
+  "Tests"). Run `terraform test` after a change to a feature toggle.

@@ -9,6 +9,10 @@
 # .tfplan files
 *.tfplan
 
+# Per-clone backend settings (terraform init -backend-config=backend.hcl).
+# backend.hcl.example is the tracked template.
+backend.hcl
+
 # Crash log files
 crash.log
 
@@ -24,7 +28,7 @@ override.tf
 override.tf.json
 *_override.tf
 *_override.tf.json
-*.lock.hcl
+# .terraform.lock.hcl is committed so every clone uses the same provider builds.
 # Include override files you do wish to add to version control using negated pattern
 #
 # !example_override.tf
@@ -32,8 +36,13 @@ override.tf.json
 # Include tfplan files to ignore the plan output of command: terraform plan -out=tfplan
 # example: *tfplan*
 
+# Private leak denylist read by bin/audit-terraform.py. Each fork keeps its own.
+.audit-denylist
+
 *.swp
 *~
+__pycache__/
+*.pyc
 
 ## script folder
 scripts/
@@ -44,4 +53,3 @@ scripts/
 
 ## VS code
 .vscode/
-

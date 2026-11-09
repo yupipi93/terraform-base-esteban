@@ -1,0 +1,5 @@
+# Copy to .sops.yaml and replace the key with the sops_kms_key output
+# (or with settings.sops.kms_key when the key already exists).
+creation_rules:
+  - path_regex: secrets/.+\.enc\.yaml$
+    gcp_kms: REPLACE_WITH_KMS_KEY_ID

@@ -6,6 +6,13 @@ locals {
   # Check if LB and monitoring configuration exists in settings
   lb_enabled    = can(local.settings.lb)
   lb_monitoring = can(local.settings.monitoring.lb)
+
+  # TLS policy of the HTTPS proxy, from lb.ssl_policy. MODERN with TLS 1.2 by default.
+  lb_ssl_policy = {
+    profile         = try(local.settings.lb.ssl_policy.profile, "MODERN")
+    min_tls_version = try(local.settings.lb.ssl_policy.min_tls_version, "TLS_1_2")
+    custom_features = try(local.settings.lb.ssl_policy.custom_features, [])
+  }
 }
 
 # ===================================================================
@@ -36,9 +43,6 @@ locals {
 
   # Convert to map for for_each
   iap_rules_map = { for rule in local.iap_rules : rule.rule_id => rule }
-
-  # Get unique services that have IAP rules
-  iap_services = toset([for rule in local.iap_rules : rule.service_key])
 }
 
 # ===================================================================
@@ -171,17 +175,15 @@ resource "google_compute_global_address" "lb_static_ip" {
 
   name = "${local.base_name_medium}-lb-ip"
 
-  labels = {
-    managed_by = "terraform"
-  }
+  labels = local.common_labels
 }
 
 # Managed SSL Certificate
 module "certificate_main" {
   count = local.lb_enabled ? 1 : 0
 
-  source         = "./modules/tf_gcp_managed_ssl_certificate_v1.1-202408221449"
-  base_name      = format("%s--%s-main", local.base_name, terraform.workspace)
+  source         = "./modules/gcp_managed_ssl_certificate_v1.1"
+  base_name      = format("%s--%s-main", local.base_name, local.workspace)
   region_name    = local.settings.region_name
   gcp_project_id = local.settings.project.id
   domain         = try(local.settings.lb.domain, [])
@@ -192,15 +194,33 @@ resource "google_compute_ssl_policy" "lb_ssl_policy" {
   count = local.lb_enabled ? 1 : 0
 
   name            = "${local.base_name_medium}-ssl-policy"
-  profile         = "MODERN"  # Security profile: COMPATIBLE, MODERN, RESTRICTED, or CUSTOM
-  min_tls_version = "TLS_1_2" # Minimum TLS version: TLS_1_0, TLS_1_1, TLS_1_2, TLS_1_3
-
-  # For CUSTOM profile, you can specify custom_features as a list:
-  # custom_features = ["TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256", "TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384"]
+  profile         = local.lb_ssl_policy.profile
+  min_tls_version = local.lb_ssl_policy.min_tls_version
+  custom_features = local.lb_ssl_policy.profile == "CUSTOM" ? local.lb_ssl_policy.custom_features : null
 
   # Lifecycle rule to prevent premature destruction
   lifecycle {
     create_before_destroy = true
+
+    precondition {
+      condition     = contains(["COMPATIBLE", "MODERN", "RESTRICTED", "CUSTOM"], local.lb_ssl_policy.profile)
+      error_message = "lb.ssl_policy.profile must be COMPATIBLE, MODERN, RESTRICTED or CUSTOM."
+    }
+
+    precondition {
+      condition     = contains(["TLS_1_0", "TLS_1_1", "TLS_1_2", "TLS_1_3"], local.lb_ssl_policy.min_tls_version)
+      error_message = "lb.ssl_policy.min_tls_version must be TLS_1_0, TLS_1_1, TLS_1_2 or TLS_1_3."
+    }
+
+    precondition {
+      condition     = local.lb_ssl_policy.min_tls_version != "TLS_1_3" || local.lb_ssl_policy.profile == "RESTRICTED"
+      error_message = "lb.ssl_policy.min_tls_version TLS_1_3 needs profile RESTRICTED."
+    }
+
+    precondition {
+      condition     = (local.lb_ssl_policy.profile == "CUSTOM") == (length(local.lb_ssl_policy.custom_features) > 0)
+      error_message = "lb.ssl_policy.custom_features is required with profile CUSTOM and not allowed with any other profile."
+    }
   }
 }
 
@@ -311,9 +331,7 @@ resource "google_compute_global_forwarding_rule" "lb_forwarding_rule" {
   ip_address            = google_compute_global_address.lb_static_ip[0].address
   load_balancing_scheme = "EXTERNAL_MANAGED"
 
-  labels = {
-    managed_by = "terraform"
-  }
+  labels = local.common_labels
 
   # Explicit dependency to ensure proper destruction order
   depends_on = [
@@ -371,9 +389,7 @@ resource "google_compute_global_forwarding_rule" "lb_http_forwarding_rule" {
   ip_address            = google_compute_global_address.lb_static_ip[0].address
   load_balancing_scheme = "EXTERNAL_MANAGED"
 
-  labels = {
-    managed_by = "terraform"
-  }
+  labels = local.common_labels
 
   # Explicit dependency to ensure proper destruction order
   depends_on = [
@@ -391,7 +407,7 @@ resource "google_compute_global_forwarding_rule" "lb_http_forwarding_rule" {
 module "monitoring_load_balancing" {
   count = local.lb_enabled && local.lb_monitoring ? 1 : 0
 
-  source = "./modules/tf_gcp_monitoring_lb_v2.5-202502240837"
+  source = "./modules/gcp_monitoring_lb_v2.6"
 
   gcp_project_id            = local.settings.project.id
   gcp_project_id_monitoring = local.settings.project.id
@@ -399,9 +415,9 @@ module "monitoring_load_balancing" {
   load_balancer             = google_compute_url_map.load_balancer[0].name
   repo_iac                  = local.settings.iac.repo
 
-  ### Alerts Configuration ###
-  # Note: Notification channels need to be created separately
-  # Uncomment and configure when notification channels are available
+  # One policy per key set under monitoring.lb, each with every field of the
+  # module variable (duration, threshold_value, alignment_period, severity,
+  # enabled). All of them notify the security alerts channel.
 
   latency = can(local.settings.monitoring.lb.latency) ? {
     "main" = merge(
@@ -549,4 +565,3 @@ resource "google_iap_web_iam_binding" "iap_resource_accessor" {
     create_before_destroy = true
   }
 }
-

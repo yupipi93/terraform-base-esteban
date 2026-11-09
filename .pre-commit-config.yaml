@@ -1,0 +1,44 @@
+# pip install pre-commit && pre-commit install
+# Needs terraform and tflint on the PATH. CI runs the same checks
+# (.github/workflows/terraform.yml); CONTRIBUTING.md, "Checks to run before a
+# pull request".
+#
+# modules/ holds vendored snapshots that change only through a new version
+# directory, so no hook rewrites or lints them.
+exclude: ^modules/
+
+repos:
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v6.0.0
+    hooks:
+      - id: trailing-whitespace
+        args: [--markdown-linebreak-ext=md]
+      - id: end-of-file-fixer
+      - id: check-merge-conflict
+
+  - repo: https://github.com/antonbabenko/pre-commit-terraform
+    rev: v1.109.4
+    hooks:
+      - id: terraform_fmt
+      # Runs terraform init -backend=false when .terraform is missing.
+      - id: terraform_validate
+      - id: terraform_tflint
+        args:
+          - --args=--config=__GIT_WORKING_DIR__/.tflint.hcl
+
+  - repo: local
+    hooks:
+      - id: validate-settings
+        name: validate settings/*.yaml against schemas/settings.schema.json
+        entry: python bin/validate-settings.py
+        language: python
+        additional_dependencies: [pyyaml==6.0.3, jsonschema==4.26.0]
+        files: ^(settings/.*\.ya?ml|schemas/.*\.json|[^/]+\.tf|bin/validate-settings\.py)$
+        pass_filenames: false
+      - id: audit-p0
+        name: auditor, no open p0 item
+        entry: python bin/audit-terraform.py --fail-on p0
+        language: python
+        additional_dependencies: [pyyaml==6.0.3, jsonschema==4.26.0]
+        pass_filenames: false
+        always_run: true

@@ -1,0 +1,15 @@
+# Backend settings for the gcs backend in versions.tf. Copy this file to
+# backend.hcl (gitignored), set the bucket, then run:
+#
+#   terraform init -backend-config=backend.hcl
+#
+# The bucket lives in the ops project (AGENTS.md), never in an environment
+# project. Turn on object versioning on it so an overwritten state can be
+# recovered.
+bucket = "example-org-ops-tfstate"
+
+# Optional. Path inside the bucket; the default workspace stores
+# <prefix>/default.tfstate and every other workspace <prefix>/<workspace>.tfstate.
+# Without it the files sit at the bucket root. Set one when several stacks share
+# the bucket. Changing it later moves nothing: run init with -migrate-state.
+# prefix = "example-app"

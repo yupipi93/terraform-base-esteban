@@ -95,7 +95,7 @@ resource "oci_core_network_security_group_security_rule" "main" {
 
 # ─── Default security list per VCN ──────────────────────────────────────────
 # Managed only when settings define oracle.networks.<key>.default_security_list.
-# Rationale: OCI security lists are ADDITIVE to NSGs — the Oracle-created default
+# Rationale: OCI security lists are ADDITIVE to NSGs: the Oracle-created default
 # list allowed SSH from 0.0.0.0/0, silently bypassing ssh-whitelist-nsg. Managing
 # it here makes NSGs the single source of ingress truth.
 locals {

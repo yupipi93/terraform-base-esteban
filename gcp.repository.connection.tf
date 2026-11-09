@@ -9,8 +9,8 @@
 #   owner:     override for GitHub owner/org    (optional)
 #
 # Provider-specific resources live in dedicated files:
-#   project.repository.bitbucket.tf  - Bitbucket Cloud connection, secrets & IAM
-#   project.repository.github.tf     - GitHub connection, secret & IAM
+#   gcp.repository.bitbucket.tf  - Bitbucket Cloud connection, secrets & IAM
+#   gcp.repository.github.tf     - GitHub connection, secret & IAM
 #
 # The unified `repo_id_map` local lets Cloud Build triggers reference any
 # provider transparently.
@@ -97,7 +97,7 @@ locals {
   )
 
   # ---------------------------------------------------------------------------
-  # Cross-file locals consumed by project.cloudbuild.tf
+  # Cross-file locals consumed by gcp.cloudbuild.tf
   # ---------------------------------------------------------------------------
   apps_with_cloudbuild = {
     for k, v in local.app_services : k => v if lookup(v, "cloudbuild", null) != null && lookup(v.cloudbuild, "repo_name", null) != null

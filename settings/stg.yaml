@@ -1,0 +1,173 @@
+# Stg workspace. One step up from dev and the shape pro uses, without HA:
+# dedicated-core zonal Cloud SQL, Redis BASIC, Cloud NAT. See docs/ENVIRONMENTS.md.
+# Replace every example-app-stg, 000000-000000-000000 and replace-me@example.com
+# before the first plan. Do not apply this file as it is.
+# project_sys is this same project: a separate monitoring project is a later choice.
+# Do not set active-apis here. merge() would drop the list in default.yaml.
+
+project:
+  id: "example-app-stg"
+  name: "example-app-stg"
+  number: "000000000000"
+
+project_sys:
+  id: "example-app-stg"
+  name: "example-app-stg"
+  number: "000000000000"
+
+security:
+  alerts_email: "replace-me@example.com"
+  audit_logging:
+    admin_read: true
+    data_read: false
+    data_write: false
+
+logging:
+  retention_days: 30
+
+budget:
+  billing_account: "000000-000000-000000"
+  amount: 80
+  alert_spent_percents:
+    - 0.5
+    - 0.9
+    - 1.0
+  # Same as the code default, written out so nobody flips it by accident:
+  # true deploys a function that disables billing when the budget is hit.
+  enable_auto_stop: false
+
+lb:
+  domain:
+    - "stg.example.com"
+  timeout_sec: 30
+
+iap:
+  admin_access:
+    members:
+      - "user:replace-me@example.com"
+
+project_access:
+  viewers:
+    - "user:replace-me@example.com"
+  operators:
+    - "user:replace-me@example.com"
+
+repo_providers:
+  default: github
+  github:
+    owner: "example-org"
+    app_installation_id: 1
+    connection_name: "github-repo-connection"
+
+app:
+  service:
+    api:
+      name: "api"
+      loadbalancer:
+        rules:
+          - path: "/*"
+            rewrite: "/"
+            iap:
+              enabled: true
+              use_default_members: true
+      cloudbuild:
+        repo_name: "example-api"
+        inline: true
+        dockerfile_path: "Dockerfile"
+        build_context_path: "."
+        # Stg builds from main. Pro builds from a tag. See docs/ENVIRONMENTS.md.
+        branch_pattern: "^main$"
+      cloudrun:
+        allow_unauthenticated: false
+        ingress: "INGRESS_TRAFFIC_INTERNAL_LOAD_BALANCER"
+        deletion_protection: false
+        min_instances: 0
+        max_instances: 3
+        concurrency: 80
+        container_port: 8080
+        timeout: "300s"
+        cpu: 1
+        ram: "512Mi"
+        vpc_access_enabled: true
+        db_host_from_database: "main"
+        additional_roles:
+          - "roles/cloudsql.client"
+        env:
+          - name: DB_HOST
+            value: "pending"
+          - name: DB_PORT
+            value: "5432"
+          - name: DB_NAME
+            value: "api-db"
+          - name: DB_USER
+            value: "api-app-user"
+        secret_env:
+          - name: DATABASE_PASSWORD
+            var_name: DB_PASSWORD
+
+bucket:
+  uploads:
+    name: "uploads"
+    class: "REGIONAL"
+    uniform_access: true
+    enable_versioning: true
+    soft_delete_days: 7
+    force_destroy: false
+    permissions:
+      api:
+        members:
+          - "cloudrun:api"
+        roles:
+          - "roles/storage.objectAdmin"
+
+network:
+  network_tier: PREMIUM
+  internal_connection: true
+  services_cidr: "10.10.1.0/24"
+  private_google_access: true
+  # Private Service Access: the private Cloud SQL IP and Memorystore come from
+  # this block. It must not overlap services_cidr. No charge.
+  services_ip_ranges:
+    private:
+      address: "10.11.0.0"
+      prefix_length: 16
+  nats:
+    services:
+      region: europe-west1
+      number_of_addresses: 1
+
+database:
+  main:
+    name: "main"
+    sql:
+      version: "POSTGRES_15"
+      tier: "db-custom-1-3840"
+      availability: "ZONAL"
+      ipv4_enabled: false
+      ssl_mode: "ENCRYPTED_ONLY"
+      deletion_protection: true
+      disk:
+        type: "PD_SSD"
+        size: 10
+      flags:
+        max_connections: 100
+      backup:
+        start_time: "03:00"
+        retained_backups: 7
+        location: "eu"
+        point_in_time_recovery_enabled: false
+      maintenance:
+        day: 2
+        hour: 4
+      insights:
+        enabled: false
+
+redis:
+  cache:
+    name: "cache"
+    memory_size_gb: 1
+    tier: "BASIC"
+    connect_mode: "PRIVATE_SERVICE_ACCESS"
+    auth_enabled: true
+    transit_encryption_mode: "DISABLED"
+    redis_version: "REDIS_7_0"

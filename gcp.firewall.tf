@@ -1,9 +1,35 @@
 # Firewall Rules
+# Only with the shared VPC. The rules follow settings.network.services_cidr
+# instead of a hardcoded subnet that the project may not use.
+# try() is there because Terraform still type-checks a count = 0 resource.
+# The fallback values are never applied.
+
+moved {
+  from = google_compute_firewall.allow_iap_ssh
+  to   = google_compute_firewall.allow_iap_ssh[0]
+}
+
+moved {
+  from = google_compute_firewall.allow_internal_vpc
+  to   = google_compute_firewall.allow_internal_vpc[0]
+}
+
+moved {
+  from = google_compute_firewall.allow_http
+  to   = google_compute_firewall.allow_http[0]
+}
+
+moved {
+  from = google_compute_firewall.allow_https
+  to   = google_compute_firewall.allow_https[0]
+}
 
 # IAP SSH Access Rule
 resource "google_compute_firewall" "allow_iap_ssh" {
+  count = local.network_enabled ? 1 : 0
+
   name    = format("%s-allow-iap-ssh", local.base_name)
-  network = module.network.network_name
+  network = try(module.network[0].network_name, "unused")
   project = local.settings.project.id
 
   description = "Allow SSH access from Google Cloud IAP"
@@ -25,8 +51,10 @@ resource "google_compute_firewall" "allow_iap_ssh" {
 
 # Internal VPC Communication Rule
 resource "google_compute_firewall" "allow_internal_vpc" {
+  count = local.network_enabled ? 1 : 0
+
   name    = format("%s-allow-internal-vpc", local.base_name)
-  network = module.network.network_name
+  network = try(module.network[0].network_name, "unused")
   project = local.settings.project.id
 
   description = "Allow internal communication within VPC subnets"
@@ -45,11 +73,10 @@ resource "google_compute_firewall" "allow_internal_vpc" {
     protocol = "icmp"
   }
 
-  source_ranges = [
-    "10.10.1.0/24", # Services subnet
-    "10.20.0.0/24", # Database subnet range
-    "10.20.1.0/24"  # Redis subnet range
-  ]
+  source_ranges = try(distinct(concat(
+    [local.settings.network.services_cidr],
+    try(local.settings.network.extra_internal_cidrs, []),
+  )), ["0.0.0.0/32"])
   target_tags = []
 
   log_config {
@@ -59,8 +86,10 @@ resource "google_compute_firewall" "allow_internal_vpc" {
 
 # HTTP Ingress Rule
 resource "google_compute_firewall" "allow_http" {
+  count = local.network_enabled ? 1 : 0
+
   name    = format("%s-vpc-allow-http", local.base_name)
-  network = module.network.network_name
+  network = try(module.network[0].network_name, "unused")
   project = local.settings.project.id
 
   description = "Allow HTTP traffic from internet"
@@ -82,8 +111,10 @@ resource "google_compute_firewall" "allow_http" {
 
 # HTTPS Ingress Rule
 resource "google_compute_firewall" "allow_https" {
+  count = local.network_enabled ? 1 : 0
+
   name    = format("%s-vpc-allow-https", local.base_name)
-  network = module.network.network_name
+  network = try(module.network[0].network_name, "unused")
   project = local.settings.project.id
 
   description = "Allow HTTPS traffic from internet"
@@ -101,4 +132,4 @@ resource "google_compute_firewall" "allow_https" {
   log_config {
     metadata = "INCLUDE_ALL_METADATA"
   }
-} 
+}

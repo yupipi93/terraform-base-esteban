@@ -1,12 +1,12 @@
 terraform {
-  required_version = ">= 1.10.0"
+  required_version = ">= 1.14.0"
 
-  # Remote state. Create the bucket once, by hand or with a tiny bootstrap
-  # configuration, then set its name here before the first `terraform init`.
-  # Workspaces share this bucket: each one gets its own prefix automatically.
-  backend "gcs" {
-    bucket = "CHANGE-ME-tfstate-bucket"
-  }
+  # Remote state, partial configuration: the bucket (and an optional prefix) come
+  # from a gitignored backend.hcl, so no clone edits a tracked file. Create the
+  # bucket once, copy backend.hcl.example to backend.hcl, then
+  # `terraform init -backend-config=backend.hcl`. Workspaces share the bucket:
+  # each one gets its own path under the prefix automatically.
+  backend "gcs" {}
 
   required_providers {
     oci = {
@@ -15,11 +15,11 @@ terraform {
     }
     google = {
       source  = "hashicorp/google"
-      version = "~> 6.42.0"
+      version = "~> 7.42.0"
     }
     google-beta = {
       source  = "hashicorp/google-beta"
-      version = "~> 6.42.0"
+      version = "~> 7.42.0"
     }
     random = {
       source  = "hashicorp/random"
@@ -28,6 +28,14 @@ terraform {
     time = {
       source  = "hashicorp/time"
       version = "~> 0.13.0"
+    }
+    sops = {
+      source  = "carlpett/sops"
+      version = "~> 1.1"
+    }
+    archive = {
+      source  = "hashicorp/archive"
+      version = "~> 2.8"
     }
   }
 }

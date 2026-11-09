@@ -1,8 +1,9 @@
 # ===================================================================
 # BILLING BUDGET AND AUTOMATED COST CONTROL (STOP BILLING)
 # ===================================================================
-# This section handles budget alerts and the Cloud Function trigger
-# to disable billing automatically if limits are exceeded.
+# This section handles budget alerts and, only when
+# `budget.enable_auto_stop: true`, the Cloud Function that disables billing
+# automatically if limits are exceeded.
 
 # 3. Pub/Sub topic to receive budget notifications
 resource "google_pubsub_topic" "stop_billing_budget_notifications" {
@@ -10,9 +11,7 @@ resource "google_pubsub_topic" "stop_billing_budget_notifications" {
   project = local.settings.project.id
   name    = "${local.base_name}-budget-notifications"
 
-  labels = {
-    managed_by = "terraform"
-  }
+  labels = local.common_labels
 }
 
 # 4. Service Account for the Cloud Function
@@ -69,8 +68,9 @@ locals {
   # Check if the budget section exists in settings at all
   enable_billing = try(local.settings.budget, null) != null
 
-  # Feature flag to enable/disable the stop billing function from YAML
-  enable_stop_billing = local.enable_billing && try(local.settings.budget.enable_auto_stop, true)
+  # Opt-in: the function disables billing on the project, which stops every
+  # billable service in it. Only `budget.enable_auto_stop: true` deploys it.
+  enable_stop_billing = local.enable_billing && try(local.settings.budget.enable_auto_stop, false)
 }
 
 # ===================================================================
@@ -80,7 +80,7 @@ locals {
 # Only created when stop billing is enabled.
 module "stop_billing_code_bucket" {
   count  = local.enable_stop_billing ? 1 : 0
-  source = "./modules/tf_gcp_storage_v2.5-202406121124"
+  source = "./modules/gcp_storage_v2.7"
 
   base_name      = "${local.base_name_medium}-stop-billing-code"
   region_name    = local.settings.region_name
@@ -133,9 +133,7 @@ resource "google_cloudfunctions2_function" "stop_billing" {
   description = "Disables billing for the project when the budget is exceeded."
   project     = local.settings.project.id
 
-  labels = {
-    managed_by = "terraform"
-  }
+  labels = local.common_labels
 
   build_config {
     runtime     = "python313"
@@ -190,7 +188,7 @@ resource "google_billing_budget" "billing_budget" {
   }
 
   budget_filter {
-    projects = ["projects/${local.settings.project.number}"]
+    projects = ["projects/${local.project_number}"]
   }
 
   dynamic "all_updates_rule" {

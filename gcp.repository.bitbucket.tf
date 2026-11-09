@@ -79,9 +79,7 @@ resource "google_secret_manager_secret" "bitbucket_read_token" {
   project   = local.settings.project.id
   secret_id = format("%s-read-connector-token", each.key)
 
-  labels = {
-    managed_by = "terraform"
-  }
+  labels = local.common_labels
 
   replication {
     user_managed {
@@ -98,9 +96,7 @@ resource "google_secret_manager_secret" "bitbucket_admin_token" {
   project   = local.settings.project.id
   secret_id = format("%s-admin-connector-token", each.key)
 
-  labels = {
-    managed_by = "terraform"
-  }
+  labels = local.common_labels
 
   replication {
     user_managed {
@@ -117,9 +113,7 @@ resource "google_secret_manager_secret" "bitbucket_webhook_secret" {
   project   = local.settings.project.id
   secret_id = format("%s-webhook-connector-secret", each.key)
 
-  labels = {
-    managed_by = "terraform"
-  }
+  labels = local.common_labels
 
   replication {
     user_managed {
@@ -161,7 +155,7 @@ resource "google_secret_manager_secret_iam_binding" "bitbucket_read_token" {
   role      = "roles/secretmanager.secretAccessor"
 
   members = [
-    "serviceAccount:service-${local.settings.project.number}@gcp-sa-cloudbuild.iam.gserviceaccount.com"
+    "serviceAccount:service-${local.project_number}@gcp-sa-cloudbuild.iam.gserviceaccount.com"
   ]
 
   depends_on = [
@@ -177,7 +171,7 @@ resource "google_secret_manager_secret_iam_binding" "bitbucket_admin_token" {
   role      = "roles/secretmanager.secretAccessor"
 
   members = [
-    "serviceAccount:service-${local.settings.project.number}@gcp-sa-cloudbuild.iam.gserviceaccount.com"
+    "serviceAccount:service-${local.project_number}@gcp-sa-cloudbuild.iam.gserviceaccount.com"
   ]
 
   depends_on = [
@@ -193,7 +187,7 @@ resource "google_secret_manager_secret_iam_binding" "bitbucket_webhook_secret" {
   role      = "roles/secretmanager.secretAccessor"
 
   members = [
-    "serviceAccount:service-${local.settings.project.number}@gcp-sa-cloudbuild.iam.gserviceaccount.com"
+    "serviceAccount:service-${local.project_number}@gcp-sa-cloudbuild.iam.gserviceaccount.com"
   ]
 
   depends_on = [

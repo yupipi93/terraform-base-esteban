@@ -25,7 +25,7 @@ locals {
         # Generate a unique key for the mapping (e.g., "web-app-example-com")
         key    = "${service_key}-${replace(domain, ".", "-")}"
         domain = domain
-        # Determine the Cloud Run service name consistent with project.cloudrun.tf
+        # Determine the Cloud Run service name consistent with gcp.cloudrun.tf
         service = try(service_config.custom_name, "${local.base_name}-${try(service_config.name, service_key)}")
         region  = local.service_regions[service_key]
 
@@ -47,6 +47,8 @@ locals {
 
 resource "google_cloud_run_domain_mapping" "mapping" {
   for_each = local.domain_mappings
+  # Its labels are immutable: provider default labels would replace the mapping.
+  provider = google.unlabelled
 
   name     = each.value.domain
   location = try(each.value.region, local.settings.region_name)

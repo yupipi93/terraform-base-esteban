@@ -1,0 +1,32 @@
+name: Feature request
+description: A setting, resource or check the template does not have.
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Check docs/audit/BACKLOG.md first: the item may be open already, or accepted on purpose (with the reason).
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: What you cannot do today, and in which workspace shape.
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposal
+      description: The settings key or change you have in mind, with an example of the YAML.
+    validations:
+      required: true
+  - type: textarea
+    id: cost
+    attributes:
+      label: Cost and security
+      description: Does it bill anything, and in which workspaces should it be on? dev and stg must not get more expensive.
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives
+      description: Other ways you considered, or how you work around it now.

@@ -79,7 +79,7 @@ resource "google_dns_record_set" "record" {
 # zone: without them nobody can perform the registrar-side delegation, and they
 # are not predictable before the zone exists.
 output "dns_zone_name_servers" {
-  description = "Name servers per managed zone — set these at the registrar of the parent domain."
+  description = "Name servers per managed zone. Set these at the registrar of the parent domain."
   value       = { for k, z in google_dns_managed_zone.zone : k => z.name_servers }
 }
 

@@ -32,13 +32,13 @@ resource "time_sleep" "wait_for_iam_propagation" {
     module.cloud_run_services,
     # A job's own secret grants must be in here too, or the 30s below starts before they
     # exist and does nothing for them. Observed in practice: a job created a few seconds
-    # after its secretAccessor binding can have its revision refused by Cloud Run —
-    # "Permission denied on secret ... The service account used must be granted the
-    # 'Secret Manager Secret Accessor' role" — on a grant terraform had just made in the
+    # after its secretAccessor binding can have its revision refused by Cloud Run
+    # ("Permission denied on secret ... The service account used must be granted the
+    # 'Secret Manager Secret Accessor' role") on a grant terraform had just made in the
     # same apply. A second apply succeeds with no changes to anything. If you add a
     # root-level secret grant for a job, list it here.
     # Also depend on root level IAM bindings
-    # google_secret_manager_secret_iam_member.run_secrets_access 
+    # google_secret_manager_secret_iam_member.run_secrets_access
   ]
 
   create_duration = "30s"
@@ -52,10 +52,18 @@ resource "google_cloud_run_v2_job" "jobs" {
   name                = try(each.value.custom_name, format("%s-%s", local.base_name, try(each.value.name, each.key)))
   location            = local.settings.region_name
   launch_stage        = try(each.value.job-config.launch_stage, "GA")
-  deletion_protection = false
+  deletion_protection = try(each.value.job-config.deletion_protection, local.workspace == "pro")
 
-  labels = {
-    managed_by = "terraform"
+  labels = local.common_labels
+
+  # Every image update is checked against the policy in gcp.binary_auth.tf. A
+  # job-config.image that no pipeline has signed is refused once the policy
+  # enforces.
+  dynamic "binary_authorization" {
+    for_each = local.enable_binary_auth ? [1] : []
+    content {
+      use_default = true
+    }
   }
 
   template {
@@ -202,7 +210,7 @@ resource "google_cloud_run_v2_job" "jobs" {
       # VPC Access configuration
       dynamic "vpc_access" {
         for_each = try(each.value.job-config.vpc_access, null) != null ? ["dummy"] : (
-          try(each.value.job-config.enable_vpc_access, true) ? ["dummy"] : []
+          try(each.value.job-config.enable_vpc_access, local.network_enabled) ? ["dummy"] : []
         )
 
         content {
@@ -211,7 +219,7 @@ resource "google_cloud_run_v2_job" "jobs" {
 
           dynamic "network_interfaces" {
             for_each = try(each.value.job-config.vpc_access.network_interfaces, null) != null ? ["dummy"] : (
-              try(each.value.job-config.enable_vpc_access, true) ? ["dummy"] : []
+              try(each.value.job-config.enable_vpc_access, local.network_enabled) ? ["dummy"] : []
             )
 
             content {
@@ -303,7 +311,7 @@ resource "google_cloud_run_v2_job" "jobs" {
 # ===================================================================
 # Principals allowed to trigger executions of a job. NOTE: this grants
 # `roles/run.invoker`, which covers `run.jobs.run` and NOT `run.jobs.runWithOverrides`
-# — a common source of confusion. A caller that passes container overrides (Cloud Scheduler always does; see
+# (a common source of confusion). A caller that passes container overrides (Cloud Scheduler always does; see
 # gcp.scheduler.tf) additionally needs `roles/run.jobsExecutorWithOverrides`. Supports the same
 # member shortcuts as the Firestore permissions block:
 #   - "cloudrun:<service>"     → the service's dedicated runtime SA
@@ -318,8 +326,8 @@ resource "google_cloud_run_v2_job" "jobs" {
 
 locals {
   # Two roles per member, for the reason spelled out in gcp.scheduler.tf: `roles/run.invoker`
-  # covers `run.jobs.run` and stops there. Anyone passing `--args` — Cloud Scheduler always,
-  # and a human debugging with `gcloud run jobs execute --args=...` — is making a
+  # covers `run.jobs.run` and stops there. Anyone passing `--args` (Cloud Scheduler always,
+  # and a human debugging with `gcloud run jobs execute --args=...`) is making a
   # runWithOverrides call and gets a bare 403 without the second role. Measured twice in one
   # afternoon, once from each direction.
   job_invoker_roles = ["roles/run.invoker", "roles/run.jobsExecutorWithOverrides"]
@@ -349,7 +357,7 @@ locals {
 # ===================================================================
 # JOB DEPLOYERS (YAML: app.job.<key>.deployers)
 # ===================================================================
-# Principals allowed to UPDATE a job — in practice, to point it at a new image.
+# Principals allowed to UPDATE a job: in practice, to point it at a new image.
 #
 # Why this exists at all, since GCP here is Terraform-only: the image is deliberately
 # inside this resource's `ignore_changes` (see the lifecycle block above), because an image

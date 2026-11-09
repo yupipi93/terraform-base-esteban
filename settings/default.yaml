@@ -4,6 +4,20 @@
 # Each workspace file (settings/<workspace>.yaml) is merged on top of this one.
 # Keep here only what every project of yours shares; override the rest per workspace.
 
+# Placeholders so `terraform validate` works on the default workspace. That is
+# the workspace CI checks. A real environment is settings/dev.yaml,
+# settings/stg.yaml or settings/pro.yaml, and those files replace these maps.
+# Replace them before any plan of the default workspace.
+project:
+  id: "my-project-id"
+  name: "my-project"
+  # The all-zero placeholder, or no number at all, reads the real one from
+  # project.id at plan time (gcp.project.tf).
+  number: "000000000000"
+
+security:
+  alerts_email: "alerts@example.com"
+
 # System/monitoring project: the shared ops project in the `common` folder, which
 # also holds the Terraform state bucket (see AGENTS.md). Replace the placeholders
 # before the first plan.
@@ -22,57 +36,28 @@ iac:
 # Default empty app.service structure - override in environment files
 app:
   service: {}
+# Base APIs, enabled in every workspace whatever its sections. A feature's own
+# APIs (Cloud SQL, Redis, Firestore, Pub/Sub, IAP, DNS, KMS...) are turned on by
+# local.feature_apis in gcp.enabled.apis.tf when its section exists. An API that
+# nothing here knows about goes in `extra-apis` of the workspace file, never in
+# an `active-apis` copy there (the settings merge is shallow).
 active-apis:
-  # Core Infrastructure
-  - "compute.googleapis.com"
+  # Project, IAM and impersonation
   - "cloudresourcemanager.googleapis.com"
   - "iam.googleapis.com"
   - "iamcredentials.googleapis.com"
-  - "servicenetworking.googleapis.com"
-  - "vpcaccess.googleapis.com"
 
-  # Container and Build Services
+  # The security baseline module always sets the OS Login project metadata,
+  # which is a Compute Engine call. Enabling the API alone costs nothing.
+  - "compute.googleapis.com"
+
+  # Build and run
   - "cloudbuild.googleapis.com"
   - "run.googleapis.com"
   - "artifactregistry.googleapis.com"
-  #- "containeranalysis.googleapis.com"
-
-  # Storage Services
   - "storage.googleapis.com"
-  - "sqladmin.googleapis.com"
-  #- "redis.googleapis.com"
-
-  # AI and ML Services
-  #- "aiplatform.googleapis.com"
-  #- "texttospeech.googleapis.com"
-  #- "speech.googleapis.com"
-  #- "vision.googleapis.com"
-
-  # Security and Secrets
   - "secretmanager.googleapis.com"
-  #- "cloudarmor.googleapis.com"
-  - "iap.googleapis.com"
 
-  # Load Balancer and Certificates
-  - "certificatemanager.googleapis.com"
-  - "dns.googleapis.com"
-
-  # Queues
-  - "pubsub.googleapis.com"
-  - "cloudtasks.googleapis.com"
-  - "cloudscheduler.googleapis.com"
-
-  # Data Services
-  - "firestore.googleapis.com"
-
-  # Monitoring and Logging
-  - "monitoring.googleapis.com"
+  # Logging and alerting of the security baseline
   - "logging.googleapis.com"
-
-  # Billing Management
-  - "billingbudgets.googleapis.com"
-  - "cloudbilling.googleapis.com"
-
-  # Cloud Functions
-  - "cloudfunctions.googleapis.com"
-  - "eventarc.googleapis.com"
+  - "monitoring.googleapis.com"

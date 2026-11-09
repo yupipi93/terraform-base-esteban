@@ -1,0 +1,162 @@
+# Dev workspace. The cheapest profile that still runs the same app: shared-core
+# Cloud SQL, no load balancer, no Redis, no Cloud NAT, scale to zero. See
+# docs/ENVIRONMENTS.md.
+# Replace every example-app-dev, 000000-000000-000000 and replace-me@example.com
+# before the first plan. Do not apply this file as it is.
+# project_sys is this same project: a separate monitoring project is a later choice.
+# Do not set active-apis here. merge() would drop the list in default.yaml.
+
+project:
+  id: "example-app-dev"
+  name: "example-app-dev"
+  number: "000000000000"
+
+project_sys:
+  id: "example-app-dev"
+  name: "example-app-dev"
+  number: "000000000000"
+
+security:
+  alerts_email: "replace-me@example.com"
+  audit_logging:
+    admin_read: true
+    data_read: false
+    data_write: false
+
+logging:
+  retention_days: 30
+
+budget:
+  billing_account: "000000-000000-000000"
+  amount: 25
+  alert_spent_percents:
+    - 0.5
+    - 0.9
+    - 1.0
+  # Same as the code default, written out so nobody flips it by accident:
+  # true deploys a function that disables billing when the budget is hit.
+  enable_auto_stop: false
+
+# No lb and no iap section: the load balancer and its Cloud Armor policy are
+# about 34 USD a month, more than the rest of dev. Services answer on their
+# run.app URL and require IAM: operators get run.invoker on each one. Reach
+# them with `gcloud run services proxy` or an identity token
+# (docs/ENVIRONMENTS.md). Copy the lb block from stg when dev needs a domain.
+
+project_access:
+  viewers:
+    - "user:replace-me@example.com"
+  operators:
+    - "user:replace-me@example.com"
+
+repo_providers:
+  default: github
+  github:
+    owner: "example-org"
+    app_installation_id: 1
+    connection_name: "github-repo-connection"
+
+app:
+  service:
+    api:
+      name: "api"
+      cloudbuild:
+        repo_name: "example-api"
+        inline: true
+        dockerfile_path: "Dockerfile"
+        build_context_path: "."
+        # Dev builds from main. Pro builds from a tag. See docs/ENVIRONMENTS.md.
+        branch_pattern: "^main$"
+      cloudrun:
+        allow_unauthenticated: false
+        ingress: "INGRESS_TRAFFIC_ALL"
+        deletion_protection: false
+        min_instances: 0
+        max_instances: 3
+        concurrency: 80
+        container_port: 8080
+        timeout: "300s"
+        cpu: 1
+        ram: "512Mi"
+        vpc_access_enabled: true
+        # Dev has no Cloud NAT. Only private ranges (Cloud SQL) go through the
+        # VPC; public traffic leaves Cloud Run directly from a Google-owned IP.
+        vpc:
+          egress: "PRIVATE_RANGES_ONLY"
+        db_host_from_database: "main"
+        additional_roles:
+          - "roles/cloudsql.client"
+        env:
+          - name: DB_HOST
+            value: "pending"
+          - name: DB_PORT
+            value: "5432"
+          - name: DB_NAME
+            value: "api-db"
+          - name: DB_USER
+            value: "api-app-user"
+        secret_env:
+          - name: DATABASE_PASSWORD
+            var_name: DB_PASSWORD
+
+bucket:
+  uploads:
+    name: "uploads"
+    class: "REGIONAL"
+    uniform_access: true
+    enable_versioning: true
+    soft_delete_days: 7
+    force_destroy: false
+    permissions:
+      api:
+        members:
+          - "cloudrun:api"
+        roles:
+          - "roles/storage.objectAdmin"
+
+network:
+  network_tier: PREMIUM
+  internal_connection: true
+  services_cidr: "10.8.1.0/24"
+  private_google_access: true
+  # Private Service Access: the private Cloud SQL IP and Memorystore come from
+  # this block. It must not overlap services_cidr. No charge.
+  services_ip_ranges:
+    private:
+      address: "10.9.0.0"
+      prefix_length: 16
+  # No Cloud NAT: Cloud Run sends public traffic outside the VPC (vpc.egress
+  # above), and nothing else here needs a static outbound IP. Copy the NAT
+  # block from stg only when a third party must allowlist the egress address.
+
+database:
+  main:
+    name: "main"
+    sql:
+      version: "POSTGRES_15"
+      # Shared core, 0.6 GB RAM, no SLA. Enough for a dev database.
+      tier: "db-f1-micro"
+      availability: "ZONAL"
+      ipv4_enabled: false
+      ssl_mode: "ENCRYPTED_ONLY"
+      # Dev is meant to be torn down: off, so terraform destroy can delete the
+      # instance. Stg and pro keep it on.
+      deletion_protection: false
+      disk:
+        type: "PD_SSD"
+        size: 10
+      flags:
+        max_connections: 25   # the db-f1-micro default; more risks running out of memory
+      backup:
+        start_time: "03:00"
+        retained_backups: 7
+        location: "eu"
+        point_in_time_recovery_enabled: false   # dev keeps the nightly backup only
+      maintenance:
+        day: 2
+        hour: 4
+      insights:
+        enabled: false
+
+# No redis section: a Memorystore instance bills every hour it exists. The app
+# must run without a cache here (stg and pro keep one with the same name).

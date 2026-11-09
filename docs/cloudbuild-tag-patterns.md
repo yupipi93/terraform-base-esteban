@@ -1,99 +1,100 @@
-# Managing Cloud Build Triggers via Tag Patterns
+# Cloud Build triggers: tag and branch patterns
 
-This document explains how Cloud Build triggers are implemented and managed in this infrastructure, specifically focusing on the **Tag Pattern** mechanism used to initiate builds.
+Every build declared in the settings gets one Cloud Build trigger that fires on a
+push to its repository. This page covers what decides which push starts it.
 
-## 1. Overview
+## Where triggers come from
 
-In this project, Cloud Build triggers are:
-- **Defined in Terraform**: Using the `google_cloudbuild_trigger` resource in `project.cloudbuild.tf`.
-- **Configured via YAML**: In `settings/${workspace}.yaml` files (e.g., `my-workspace.yaml`).
-- **Triggered by Git Tags**: Builds are automatically started when a git tag matching a specific REGEX pattern is pushed to the repository.
-- **Provider Agnostic**: Supports both GitHub and Bitbucket repositories.
+Terraform creates them as `google_cloudbuild_trigger.cloudbuild_triggers` in
+`gcp.cloudbuild.tf`, one per entry of `local.all_cloudbuild_configs`. An entry is a
+`cloudbuild` block under `app.service.<name>` or `app.job.<name>`, or an entry of
+the top-level `cloudbuild` map (a build with no Cloud Run resource), in
+`settings/<workspace>.yaml`. The repository is on GitHub or Bitbucket, reached
+through the connection in `gcp.repository.connection.tf`: `cloudbuild.provider`
+picks one, and `repo_providers.default` (default `github`) applies when it is
+left out.
 
-## 2. Default Tag Pattern Behavior
+## The default: a tag named after the workspace
 
-By default, if no specific pattern is defined in the YAML configuration, the system automatically assigns a tag pattern based on the current environment (workspace).
+With neither `tag_pattern` nor `branch_pattern` set, the trigger fires on a tag
+that starts with the workspace name and carries ten digits:
 
-The default pattern logic in `project.cloudbuild.tf` is:
 ```hcl
-tag_pattern = try(value.tag_pattern, format("^%s-[0-9]{8}[0-9]{2}$", terraform.workspace))
+tag_pattern = try(src.cb.tag_pattern, try(src.cb.branch_pattern, null) != null ? null : format("^%s-[0-9]{8}[0-9]{2}$", local.workspace))
 ```
 
-### Default Pattern Format
-`^{workspace}-YYYYMMDDHH$`
+`local.workspace` is the Terraform workspace, or `settings_workspace` in a test
+(`docs/audit/OPERATING.md`, "Tests"). The ten digits read as `YYYYMMDDNN`, a date
+and a two-digit counter:
 
-**Examples:**
-- **Environment: `my-workspace`** -> Pattern: `^my-workspace-[0-9]{8}[0-9]{2}$` (e.g., tag `my-workspace-2024021501`)
-- **Environment: `dev`** -> Pattern: `^dev-[0-9]{8}[0-9]{2}$` (e.g., tag `dev-2024021501`)
+| Workspace | Pattern | Tag that fires it |
+|---|---|---|
+| `dev` | `^dev-[0-9]{8}[0-9]{2}$` | `dev-2026010101` |
+| `stg` | `^stg-[0-9]{8}[0-9]{2}$` | `stg-2026010101` |
+| `pro` | `^pro-[0-9]{8}[0-9]{2}$` | `pro-2026010101` |
 
-## 3. Configuration (How to Manage)
+## Overriding it
 
-You can override the default tag pattern or define new triggers by editing the **YAML settings files**.
+Set one of the two keys in the `cloudbuild` block:
 
-### File Location
-- `settings/my-workspace.yaml`
-- `settings/default.yaml`
-
-### Configuration Structure
-
-You can define `tag_pattern` inside the `cloudbuild` block of an application.
-
-#### Example: Overriding for a specific service
-In `settings/my-workspace.yaml`:
+- `tag_pattern`: another tag regular expression.
+- `branch_pattern`: fire on a push to a matching branch instead. When it is set and
+  `tag_pattern` is not, the trigger has no tag pattern at all.
 
 ```yaml
 app:
   service:
-    multiweb-nuxt:
-      name: "multiweb-nuxt"
-      cloudrun: { ... }
+    web:
+      name: "web"
       cloudbuild:
-        repo_name: "multiweb-nuxt"
-        provider: "github" # optional, defaults to settings.repo_providers.default
-        # Custom tag pattern override
-        tag_pattern: "^release-v[0-9]+.[0-9]+.[0-9]+$" 
+        repo_name: "example-web"
+        provider: "github"          # optional, default repo_providers.default
+        tag_pattern: "^release-v[0-9]+\\.[0-9]+\\.[0-9]+$"
 ```
-*This will trigger on tags like `release-v1.0.0`, `release-v2.1.5`.*
 
-## 4. Implementation Details (Codebase)
+That trigger fires on `release-v1.0.0` and `release-v2.1.5`. The reference files
+use both forms: dev and stg (and pre) set `branch_pattern: "^main$"` and deploy
+every push to `main`; pro keeps the default and deploys on a `pro-` tag.
 
-### `project.cloudbuild.tf`
-This file contains the logic that creates the Cloud Build trigger resource. It maps the tag pattern to the repository push event.
+`build_filter_paths` limits a trigger to pushes that change those paths. It
+only makes sense with a branch pattern, since a tag carries no diff.
+
+## The trigger resource
 
 ```hcl
 resource "google_cloudbuild_trigger" "cloudbuild_triggers" {
   for_each = local.all_cloudbuild_configs
 
-  # ... configuration ...
+  # ...
 
   repository_event_config {
     repository = local.repo_id_map["${each.value.provider}/${each.value.repo_name}"]
     push {
-      tag = each.value.tag_pattern
+      tag    = each.value.tag_pattern
+      branch = each.value.branch_pattern
     }
   }
 }
 ```
 
-### `locals.tf` & `project.cloudbuild.tf` (Locals)
-The defaults and merging logic are handled in the `locals` block of `project.cloudbuild.tf`.
+The defaults and the merge of the three places a build can be declared live in
+the `locals` block at the top of `gcp.cloudbuild.tf`. `docs/cloudbuild-pipeline.md`
+lists every other key of the block.
 
-## 5. How to Deploy & Trigger
+## Changing a pattern
 
-### To Update the Pattern:
-1. Modify `settings/${workspace}.yaml`.
-2. Run `terraform apply`.
-3. This updates the Cloud Build trigger configuration in GCP.
+1. Edit `settings/<workspace>.yaml`.
+2. Run `terraform plan`. The trigger is updated in place.
+3. Apply after the plan is reviewed and approved.
 
-### To Trigger a Build:
-1. Commit your code to the configured repository.
-2. Create and push a tag matching the configured pattern.
+## Starting a build
+
+Push a tag that matches the pattern to the configured repository:
 
 ```bash
-# Example for default my-workspace environment pattern
-git tag my-workspace-2024021501
-git push origin my-workspace-2024021501
+git tag pro-2026010101
+git push origin pro-2026010101
 ```
 
-3. GCP Cloud Build will detect the tag and start the pipeline.
-
+Cloud Build picks the push up and runs the pipeline. With a branch pattern, a
+push to the branch is enough.

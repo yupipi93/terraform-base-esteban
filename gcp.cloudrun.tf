@@ -26,6 +26,11 @@ locals {
     for key, config in local.app_services : key => try(config.cloudrun.region, local.settings.region_name)
   }
 
+  # Protected from destroy by default in pro only
+  service_deletion_protection = {
+    for key, config in local.app_services : key => try(config.cloudrun.deletion_protection, local.workspace == "pro")
+  }
+
   # Extract environment variables per service from YAML configuration
   service_env_vars = {
     for key, config in local.app_services : key => [
@@ -125,7 +130,7 @@ locals {
     for key, config in local.app_services : key => merge(
       {
         cloudbuild = {
-          account     = "serviceAccount:${local.settings.project.number}@cloudbuild.gserviceaccount.com"
+          account     = "serviceAccount:${local.project_number}@cloudbuild.gserviceaccount.com"
           permissions = ["roles/run.admin"]
         }
       },
@@ -181,7 +186,7 @@ locals {
 module "cloudrun_gcs_volumes" {
   for_each = local.gcs_volumes_to_create
 
-  source = "./modules/tf_gcp_storage_v2.5-202406121124"
+  source = "./modules/gcp_storage_v2.7"
 
   base_name      = local.gcs_bucket_names[each.key]
   region_name    = local.settings.region_name
@@ -220,14 +225,14 @@ resource "google_storage_bucket_iam_member" "cloudrun_gcs_access" {
 module "cloud_run_services" {
   for_each = local.app_services
 
-  source = "./modules/tf_gcp_cloudrun_v2_v6.5-202502191120"
+  source = "./modules/gcp_cloudrun_v6.6"
 
   # If custom_name is set, use the exact service name; otherwise use standard naming
   base_name           = try(each.value.custom_name, null) != null ? each.value.custom_name : "${local.base_name}-${local.run_service_names[each.key]}"
   gcp_project_id      = local.settings.project.id
   gcp_project_sys_id  = local.settings.project_sys.id
   region_name         = local.service_regions[each.key]
-  deletion_protection = false
+  deletion_protection = local.service_deletion_protection[each.key]
 
   # Service account: use external SA if specified, otherwise create a dedicated one
   service_account = try(each.value.cloudrun.external_sa, null) != null ? {
@@ -242,9 +247,18 @@ module "cloud_run_services" {
   cloudrun = {
     execution_environment = try(each.value.cloudrun.execution_environment, "EXECUTION_ENVIRONMENT_GEN2")
     concurrency           = try(each.value.cloudrun.concurrency, 100)
-    ingress               = try(each.value.cloudrun.ingress, "INGRESS_TRAFFIC_INTERNAL_LOAD_BALANCER")
-    timeout               = try(each.value.cloudrun.timeout, "3600s")
-    launch_stage          = local.service_launch_stages[each.key]
+    # Without a load balancer the service has no other way in, so it accepts all
+    # traffic and stays private behind IAM unless allow_unauthenticated is set.
+    ingress      = try(each.value.cloudrun.ingress, local.lb_enabled ? "INGRESS_TRAFFIC_INTERNAL_LOAD_BALANCER" : "INGRESS_TRAFFIC_ALL")
+    timeout      = try(each.value.cloudrun.timeout, "3600s")
+    launch_stage = local.service_launch_stages[each.key]
+
+    # Same short-name rule as the jobs: a name without ":" is an instance of this project,
+    # in region_name, where gcp.sql.tf creates them.
+    cloud_sql_instances_mount = try(each.value.cloudrun.cloud_sql_instances_mount, null) == null ? null : [
+      for instance in each.value.cloudrun.cloud_sql_instances_mount :
+      length(regexall(":", instance)) > 0 ? instance : "${local.settings.project.id}:${local.settings.region_name}:${instance}"
+    ]
 
     containers = [
       {
@@ -254,7 +268,7 @@ module "cloud_run_services" {
         # Pass-through so a service can override the image's ENTRYPOINT/CMD from YAML.
         # Observed in practice: Cloud Run injects PORT=<container_port>, and an image whose
         # entrypoint runs an app server behind its own internal proxy may read that PORT
-        # and try to bind the port the proxy already holds — EADDRINUSE, crash loop, and a
+        # and try to bind the port the proxy already holds: EADDRINUSE, crash loop, and a
         # 502 from the proxy. `command`/`args` let you adjust the startup (e.g. unset PORT)
         # for that one service without forking the image.
         command = try(each.value.cloudrun.command, null)
@@ -274,7 +288,10 @@ module "cloud_run_services" {
           cpu               = try(each.value.cloudrun.cpu_limit, format("%dm", try(each.value.cloudrun.cpu, 2) * 1000))
           memory            = try(each.value.cloudrun.ram, "2048Mi")
           startup_cpu_boost = try(each.value.cloudrun.startup_cpu_boost, true)
-          cpu_idle          = try(each.value.cloudrun.cpu_idle, false)
+          # true = CPU only while a request is served (request-based billing); work
+          # left running after the response is throttled. Pro keeps CPU allocated
+          # so its warm instances can run background work.
+          cpu_idle = try(each.value.cloudrun.cpu_idle, local.workspace != "pro")
         }
 
         # Environment variables
@@ -293,7 +310,7 @@ module "cloud_run_services" {
     ]
 
     # VPC access configuration
-    vpc_access = try(each.value.cloudrun.vpc_access_enabled, true) ? {
+    vpc_access = try(each.value.cloudrun.vpc_access_enabled, local.network_enabled) ? {
       egress = try(each.value.cloudrun.vpc.egress, "ALL_TRAFFIC")
       network_interfaces = {
         network    = try(each.value.cloudrun.vpc.network, "${local.base_name}-vpc")
@@ -309,6 +326,9 @@ module "cloud_run_services" {
     }
 
     iap_enabled = try(each.value.cloudrun.iap.enabled, false)
+
+    # Deploys are checked against the policy in gcp.binary_auth.tf.
+    binary_authorization = local.enable_binary_auth
   }
 
   # Permissions
@@ -393,4 +413,3 @@ resource "google_storage_bucket_iam_member" "dedicated_sa_gcs_access" {
 
   depends_on = [module.cloud_run_services]
 }
-

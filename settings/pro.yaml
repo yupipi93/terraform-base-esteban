@@ -1,0 +1,325 @@
+# Pro workspace. Same resources as stg, sized and protected for production.
+# Replace every example-app-pro, 000000-000000-000000 and replace-me@example.com
+# before the first plan. Do not apply this file as it is.
+# project_sys is this same project until several apps share one monitoring project.
+# Do not set active-apis here. merge() would drop the list in default.yaml.
+
+project:
+  id: "example-app-pro"
+  name: "example-app-pro"
+  number: "000000000000"
+
+project_sys:
+  id: "example-app-pro"
+  name: "example-app-pro"
+  number: "000000000000"
+
+security:
+  alerts_email: "replace-me@example.com"
+  audit_logging:
+    admin_read: true
+    data_read: false
+    data_write: false
+  artifact_scanning: true
+  # Organization policies on the project: no service account key can be
+  # created or uploaded. The applier needs roles/orgpolicy.policyAdmin, granted
+  # on the organization or a folder.
+  disable_service_account_keys: true
+  # Who Google tells about security incidents, outages and suspensions of this
+  # project, instead of the owners only. Billing notices go to the contacts of
+  # the billing account, which this stack does not own. No email: the entry
+  # follows alerts_email above.
+  essential_contacts:
+    - categories: ["SECURITY", "TECHNICAL", "SUSPENSION"]
+  # The monitoring.log_alerts presets below report these events once per
+  # change, with the principal. The module's threshold alerts on the same
+  # events would send a second email. Network, routes and owner stay on.
+  metric_alerts:
+    audit_config: false
+    cloud_sql: false
+    custom_roles: false
+    firewall: false
+    storage_permissions: false
+
+logging:
+  retention_days: 90
+  # Locked: the retention cannot be shortened and the bucket cannot be deleted
+  # until its oldest entry is 365 days old. Storage past 30 days is billed.
+  audit_archive:
+    retention_days: 365
+    locked: true
+
+# Log-based alerts on audit log events, one email per change. Replace the
+# excluded principal with the identity that runs terraform apply, or every
+# apply that touches IAM or a firewall pages the channel. Load balancer alerts
+# and an uptime check on the public domain follow.
+monitoring:
+  excluded_principals:
+    - "terraform@example-app-pro.iam.gserviceaccount.com"
+  log_alerts:
+    iam_policy_change:
+      enabled: true
+    service_account_key_created:
+      enabled: true
+    firewall_change:
+      enabled: true
+    audit_config_change:
+      enabled: true
+    custom_role_change:
+      enabled: true
+    sql_instance_change:
+      enabled: true
+    bucket_iam_change:
+      enabled: true
+  # Load balancer alerts: server errors, p99 latency in ms, and requests
+  # blocked by Cloud Armor. Every field is required by the module.
+  lb:
+    status_5xx_backends:
+      duration: "180s"
+      threshold_value: 25
+      alignment_period: "60s"
+      severity: "ERROR"
+      enabled: true
+    latency:
+      duration: "300s"
+      threshold_value: 3000
+      alignment_period: "60s"
+      severity: "WARNING"
+      enabled: true
+    status_403_cloud_armor:
+      duration: "180s"
+      threshold_value: 150
+      alignment_period: "60s"
+      severity: "WARNING"
+      enabled: true
+  # HTTPS probe of the first lb.domain every 5 minutes from three regions.
+  # The whole site is behind IAP, so an anonymous probe gets 302 (or 401):
+  # accepting them proves DNS, certificate, load balancer and IAP answer.
+  # Point path at a route without IAP and accept 2xx only to cover the
+  # backend. It fails until lb.domain holds the real domain.
+  uptime:
+    site:
+      path: "/"
+      period: "300s"
+      timeout: "10s"
+      regions:
+        - "EUROPE"
+        - "USA_VIRGINIA"
+        - "SOUTH_AMERICA"
+      accepted_status_codes:
+        - "2xx"
+        - 302
+        - 401
+      failing_regions: 2
+  # Data Access logs for Secret Manager and one email per secret read by an
+  # identity this stack does not grant access to. The service accounts of the
+  # services, jobs and Cloud Build are skipped already, and so are the
+  # Terraform identity above and the user: and serviceAccount: accessors of
+  # secrets and external_secret_access. Add any other expected reader here,
+  # such as the members of a group: accessor.
+  secret_access:
+    enabled: true
+    allowed_principals: []
+
+# Cloud Build signs every pushed digest, and Cloud Run refuses an unsigned one.
+# The hello placeholder is on the whitelist, so the first apply goes through.
+# A project that already runs unsigned images goes through a dry-run first:
+# docs/cloudbuild-pipeline.md, "Image signing".
+binary_authorization:
+  enabled: true
+  enforcement_mode: "ENFORCED_BLOCK_AND_AUDIT_LOG"
+
+budget:
+  billing_account: "000000-000000-000000"
+  amount: 400
+  alert_spent_percents:
+    - 0.5
+    - 0.75
+    - 0.9
+    - 1.0
+  # Same as the code default, written out so nobody flips it by accident:
+  # true deploys a function that disables billing when the budget is hit.
+  enable_auto_stop: false
+
+lb:
+  domain:
+    - "app.example.com"
+  timeout_sec: 30
+  # RESTRICTED keeps only AES-GCM and ChaCha20 suites with forward secrecy;
+  # clients without them (very old Android, Java 7, Windows 7) fail the
+  # handshake. Changing the profile is an in-place update of the policy.
+  ssl_policy:
+    profile: "RESTRICTED"
+    min_tls_version: "TLS_1_2"
+
+iap:
+  admin_access:
+    members:
+      - "user:replace-me@example.com"
+
+project_access:
+  viewers:
+    - "user:replace-me@example.com"
+  operators:
+    - "user:replace-me@example.com"
+
+# External CI without service account keys (docs/WIF.md). Off until a pipeline
+# outside Cloud Build needs to deploy. Free when enabled.
+# wif:
+#   pools:
+#     ci-pool:
+#       providers:
+#         github:
+#           type: "github"
+#           attribute_condition: "assertion.repository == 'example-org/example-repo' && assertion.ref.startsWith('refs/tags/pro-')"
+#       bindings:
+#         - service_account: "deployer"
+#           principal_set: "attribute.repository/example-org/example-repo"
+#           roles:
+#             - "roles/run.developer"
+#             - "roles/artifactregistry.writer"
+
+repo_providers:
+  default: github
+  github:
+    owner: "example-org"
+    app_installation_id: 1
+    connection_name: "github-repo-connection"
+
+app:
+  service:
+    api:
+      name: "api"
+      loadbalancer:
+        rules:
+          - path: "/*"
+            rewrite: "/"
+            iap:
+              enabled: true
+              use_default_members: true
+      cloudbuild:
+        repo_name: "example-api"
+        inline: true
+        dockerfile_path: "Dockerfile"
+        build_context_path: "."
+        # Default tag pattern for this workspace: ^pro-[0-9]{8}[0-9]{2}$
+        scan:
+          secrets_blocking: true
+          sast: true
+          deps: true
+      cloudrun:
+        allow_unauthenticated: false
+        ingress: "INGRESS_TRAFFIC_INTERNAL_LOAD_BALANCER"
+        deletion_protection: true
+        min_instances: 1
+        max_instances: 10
+        concurrency: 80
+        container_port: 8080
+        timeout: "300s"
+        cpu: 2
+        ram: "2048Mi"
+        vpc_access_enabled: true
+        db_host_from_database: "main"
+        additional_roles:
+          - "roles/cloudsql.client"
+        env:
+          - name: DB_HOST
+            value: "pending"
+          - name: DB_PORT
+            value: "5432"
+          - name: DB_NAME
+            value: "api-db"
+          - name: DB_USER
+            value: "api-app-user"
+        secret_env:
+          - name: DATABASE_PASSWORD
+            var_name: DB_PASSWORD
+
+bucket:
+  uploads:
+    name: "uploads"
+    class: "REGIONAL"
+    uniform_access: true
+    enable_versioning: true
+    soft_delete_days: 30
+    force_destroy: false
+    # Data minimisation: an overwritten or deleted file stays readable as a
+    # noncurrent version for 30 days, then soft delete keeps it 30 more. No
+    # retention_policy here: a locked one would block deleting a user's files.
+    lifecycle_rules:
+      delete_noncurrent_versions:
+        days_since_noncurrent_time: 30
+        action_type: "Delete"
+    permissions:
+      api:
+        members:
+          - "cloudrun:api"
+        roles:
+          - "roles/storage.objectAdmin"
+
+network:
+  network_tier: PREMIUM
+  internal_connection: true
+  services_cidr: "10.20.1.0/24"
+  private_google_access: true
+  # Private Service Access: the private Cloud SQL IP and Memorystore come from
+  # this block. It must not overlap services_cidr. No charge.
+  services_ip_ranges:
+    private:
+      address: "10.21.0.0"
+      prefix_length: 16
+  nats:
+    services:
+      region: europe-west1
+      number_of_addresses: 1
+
+database:
+  main:
+    name: "main"
+    sql:
+      version: "POSTGRES_15"
+      tier: "db-custom-2-7680"
+      availability: "REGIONAL"
+      ipv4_enabled: false
+      ssl_mode: "ENCRYPTED_ONLY"
+      deletion_protection: true
+      disk:
+        type: "PD_SSD"
+        size: 20
+      flags:
+        max_connections: 200
+        log_connections: "on"
+        log_disconnections: "on"
+        log_min_duration_statement: "1000"
+        log_lock_waits: "on"
+        cloudsql.enable_pgaudit: "on"
+        pgaudit.log: "ddl,role"
+      special_password:
+        enabled: true
+        characters: "-_.~"
+      backup:
+        start_time: "02:00"
+        retained_backups: 30
+        location: "eu"
+        point_in_time_recovery_enabled: true
+        transaction_log_retention_days: 7
+      maintenance:
+        day: 3
+        hour: 4
+      insights:
+        enabled: true
+        query_plans_per_minute: 5
+
+redis:
+  cache:
+    name: "cache"
+    memory_size_gb: 1
+    tier: "STANDARD_HA"
+    connect_mode: "PRIVATE_SERVICE_ACCESS"
+    auth_enabled: true
+    transit_encryption_mode: "SERVER_AUTHENTICATION"
+    redis_version: "REDIS_7_0"
+    deletion_protection: true
+    persistence:
+      persistence_mode: "RDB"
+      rdb_snapshot_period: "TWELVE_HOURS"

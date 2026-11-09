@@ -66,10 +66,9 @@ resource "google_secret_manager_secret" "standalone" {
   project   = local.settings.project.id
   secret_id = each.key
 
-  labels = {
-    managed_by = "terraform"
-    purpose    = try(each.value.purpose, "general")
-  }
+  labels = merge(local.common_labels, {
+    purpose = try(each.value.purpose, "general")
+  })
 
   replication {
     user_managed {
@@ -80,7 +79,7 @@ resource "google_secret_manager_secret" "standalone" {
   }
 }
 
-# Placeholder first version — the real value is added out of band (see the guide in
+# Placeholder first version: the real value is added out of band (see the guide in
 # docs/oracle-credentials-bootstrap.md). Terraform must never learn the real value.
 resource "google_secret_manager_secret_version" "standalone_placeholder" {
   for_each = local.standalone_secrets

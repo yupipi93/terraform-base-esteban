@@ -13,12 +13,12 @@ def stop_billing(data, context):
         # Decode Pub/Sub message
         pubsub_data = base64.b64decode(data['data']).decode('utf-8')
         pubsub_json = json.loads(pubsub_data)
-        
+
         print(f"Received budget alert: {pubsub_json}")
-        
+
         cost_amount = pubsub_json.get('costAmount', 0.0)
         budget_amount = pubsub_json.get('budgetAmount', 0.0)
-        
+
         print(f"Cost: {cost_amount}, Budget: {budget_amount}")
 
         if cost_amount >= budget_amount:
@@ -47,23 +47,23 @@ def stop_billing(data, context):
             billing_info = projects.getBillingInfo(
                 name=f'projects/{project_id}'
             ).execute()
-            
+
             print(f"Current billing info: {billing_info}")
 
             if billing_info.get('billingEnabled'):
                 print(f'Billing is enabled. Disabling billing for project {project_id}...')
                 body = {'billingAccountName': ''}  # Empty name disables billing
-                
+
                 result = projects.updateBillingInfo(
                     name=f'projects/{project_id}', body=body
                 ).execute()
-                
+
                 print(f'SUCCESS: Billing disabled for project {project_id}. Result: {result}')
             else:
                 print(f'INFO: Billing already disabled for project {project_id}.')
         else:
             print(f'INFO: Budget not exceeded. Current cost: {cost_amount}, Budget: {budget_amount}')
-            
+
     except HttpError as e:
         print(f"HTTP Error occurred: {e}")
         print(f"Error details: {e.error_details if hasattr(e, 'error_details') else 'No additional details'}")

@@ -1,0 +1,856 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Workspace settings",
+  "description": "settings/<workspace>.yaml merged over settings/default.yaml (a shallow merge: a top-level key in the workspace file replaces the whole value of default.yaml). Every top-level key a root .tf file reads is listed here and an unknown one is an error, so a typo does not vanish behind try(). Sections whose shape is fixed by the root files are closed too. Entries passed whole to a module or a dynamic block (Cloud Run services and jobs, buckets, SQL instance settings, alert thresholds) stay open: their known keys are typed and other keys are allowed. Checked by bin/validate-settings.py.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["project", "project_sys", "region_name", "zones_name", "client", "iac", "security", "app", "active-apis"],
+  "properties": {
+    "project": { "$ref": "#/$defs/projectRef", "description": "The GCP project every resource of the workspace lives in. It must exist." },
+    "project_sys": { "$ref": "#/$defs/projectRef", "description": "The ops project (common folder): state bucket and shared monitoring." },
+    "region_name": { "type": "string", "pattern": "^[a-z]+-[a-z]+[0-9]+$" },
+    "zones_name": { "$ref": "#/$defs/strings", "description": "The first zone hosts zonal resources (Redis, zonal Cloud SQL)." },
+    "client": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name"],
+      "properties": {
+        "name": { "type": "string", "pattern": "^[a-z][a-z0-9-]*$", "description": "Short prefix of every resource name." }
+      }
+    },
+    "iac": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "repo": { "type": "string", "description": "Repository name, used in alert texts and the repo label." }
+      }
+    },
+    "active-apis": { "$ref": "#/$defs/apis", "description": "Base APIs. Set in default.yaml only: the merge is shallow." },
+    "extra-apis": { "$ref": "#/$defs/apis", "description": "APIs added to the base and feature APIs of this workspace." },
+
+    "security": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "alerts_email": { "type": "string", "pattern": "^[^@\\s]+@[^@\\s]+\\.[^@\\s]+$" },
+        "artifact_scanning": { "type": "boolean" },
+        "disable_service_account_keys": { "type": "boolean", "description": "Enforce the organization policies that refuse service account key creation and upload on the project." },
+        "essential_contacts": {
+          "description": "Essential Contacts of the project: true for alerts_email on SECURITY and TECHNICAL, or one entry per contact.",
+          "type": ["boolean", "array"],
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "email": { "type": "string", "pattern": "^[^@\\s]+@[^@\\s]+\\.[^@\\s]+$" },
+              "categories": {
+                "type": "array",
+                "items": { "enum": ["ALL", "SUSPENSION", "SECURITY", "TECHNICAL", "BILLING", "LEGAL", "PRODUCT_UPDATES", "TECHNICAL_INCIDENTS"] }
+              },
+              "language_tag": { "type": "string", "pattern": "^[a-z]{2,3}(-[A-Za-z0-9]{2,8})*$" }
+            }
+          }
+        },
+        "audit_logging": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "admin_read": { "type": "boolean" },
+            "data_read": { "type": "boolean" },
+            "data_write": { "type": "boolean" }
+          }
+        },
+        "metric_alerts": {
+          "type": ["boolean", "object"],
+          "additionalProperties": false,
+          "description": "Threshold alerts of the basic security module: true, false, or one switch per family.",
+          "properties": {
+            "audit_config": { "type": "boolean" },
+            "cloud_sql": { "type": "boolean" },
+            "custom_roles": { "type": "boolean" },
+            "firewall": { "type": "boolean" },
+            "network": { "type": "boolean" },
+            "owner": { "type": "boolean" },
+            "routes": { "type": "boolean" },
+            "storage_permissions": { "type": "boolean" }
+          }
+        }
+      }
+    },
+    "logging": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "retention_days": { "type": "integer", "minimum": 1, "maximum": 3650 },
+        "required_retention_days": { "type": "integer", "minimum": 400, "maximum": 3650 },
+        "audit_archive": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["retention_days"],
+          "properties": {
+            "retention_days": { "type": "integer", "minimum": 1, "maximum": 3650 },
+            "locked": { "type": "boolean" },
+            "location": { "type": "string" },
+            "bucket_id": { "type": "string" },
+            "filter": { "type": "string" }
+          }
+        }
+      }
+    },
+    "monitoring": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "cloudrun": { "$ref": "#/$defs/thresholdMap", "description": "Alert thresholds of the Cloud Run module, merged over its defaults." },
+        "lb": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "request_count": { "$ref": "#/$defs/lbAlert" },
+            "latency": { "$ref": "#/$defs/lbAlert" },
+            "status_403_cloud_armor": { "$ref": "#/$defs/lbAlert" },
+            "status_403_backends": { "$ref": "#/$defs/lbAlert" },
+            "status_404_backends": { "$ref": "#/$defs/lbAlert" },
+            "status_4xx_backends": { "$ref": "#/$defs/lbAlert" },
+            "status_5xx_backends": { "$ref": "#/$defs/lbAlert" }
+          }
+        },
+        "excluded_principals": { "$ref": "#/$defs/strings" },
+        "log_alerts": {
+          "type": "object",
+          "additionalProperties": { "$ref": "#/$defs/logAlert" },
+          "description": "Named log-based alerts. A preset key needs only enabled; any other key needs a filter."
+        },
+        "uptime": {
+          "type": "object",
+          "additionalProperties": { "$ref": "#/$defs/uptimeCheck" }
+        },
+        "secret_access": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "enabled": { "type": "boolean" },
+            "exclude_stack_principals": { "type": "boolean" },
+            "allowed_principals": { "$ref": "#/$defs/strings" },
+            "secrets": { "$ref": "#/$defs/strings" },
+            "severity": { "$ref": "#/$defs/severity" },
+            "notification_rate_limit": { "$ref": "#/$defs/duration" },
+            "auto_close": { "$ref": "#/$defs/duration" }
+          }
+        }
+      }
+    },
+    "binary_authorization": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "evaluation_mode": { "enum": ["REQUIRE_ATTESTATION", "ALWAYS_ALLOW", "ALWAYS_DENY"] },
+        "enforcement_mode": { "enum": ["DRYRUN_AUDIT_LOG_ONLY", "ENFORCED_BLOCK_AND_AUDIT_LOG"] }
+      }
+    },
+    "sops": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "kms_key": { "type": "string", "description": "Existing key id. Absent: the stack creates one." },
+        "decrypters": { "$ref": "#/$defs/strings" }
+      }
+    },
+    "wif": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "pools": { "type": "object", "additionalProperties": { "$ref": "#/$defs/wifPool" } }
+      }
+    },
+
+    "budget": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "billing_account": { "type": "string", "pattern": "^[A-Za-z0-9]{6}-[A-Za-z0-9]{6}-[A-Za-z0-9]{6}$" },
+        "amount": { "type": "number", "minimum": 0 },
+        "alert_spent_percents": { "type": "array", "items": { "type": "number", "minimum": 0 } },
+        "enable_auto_stop": { "type": "boolean", "description": "true deploys a function that disables billing when the budget is hit." }
+      }
+    },
+    "lb": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "domain": { "$ref": "#/$defs/strings" },
+        "timeout_sec": { "type": "integer", "minimum": 1 },
+        "ssl_policy": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "profile": { "enum": ["COMPATIBLE", "MODERN", "RESTRICTED", "CUSTOM"] },
+            "min_tls_version": { "enum": ["TLS_1_0", "TLS_1_1", "TLS_1_2", "TLS_1_3"] },
+            "custom_features": { "$ref": "#/$defs/strings" }
+          }
+        }
+      }
+    },
+    "iap": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "admin_access": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": { "members": { "$ref": "#/$defs/members" } }
+        }
+      }
+    },
+    "project_access": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "viewers": { "$ref": "#/$defs/members" },
+        "operators": { "$ref": "#/$defs/members" }
+      }
+    },
+    "network": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "network_tier": { "enum": ["PREMIUM", "STANDARD"] },
+        "internal_connection": { "type": "boolean" },
+        "services_cidr": { "$ref": "#/$defs/cidr", "description": "Set: one shared VPC is created. Absent: no network." },
+        "private_google_access": { "type": "boolean" },
+        "extra_internal_cidrs": { "type": "array", "items": { "$ref": "#/$defs/cidr" } },
+        "services_ip_ranges": {
+          "type": "object",
+          "description": "Private Service Access ranges for private Cloud SQL and Memorystore. Absent: one Google-allocated /16 when a private data store exists. Empty: none.",
+          "additionalProperties": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "address": { "type": "string", "pattern": "^[0-9]{1,3}(\\.[0-9]{1,3}){3}$" },
+              "description": { "type": "string" },
+              "prefix_length": { "type": "integer", "minimum": 8, "maximum": 24 },
+              "address_type": { "enum": ["INTERNAL"] },
+              "purpose": { "enum": ["VPC_PEERING"] },
+              "single_dash": { "type": "boolean" }
+            }
+          }
+        },
+        "nats": {
+          "type": "object",
+          "description": "One router and Cloud NAT per entry. Billed.",
+          "additionalProperties": {
+            "type": "object",
+            "additionalProperties": true,
+            "required": ["region"],
+            "properties": {
+              "region": { "type": "string" },
+              "number_of_addresses": { "type": "integer", "minimum": 0 }
+            }
+          }
+        }
+      }
+    },
+    "elastic_psc": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["service_attachment"],
+      "properties": {
+        "service_attachment": { "type": "string", "pattern": "^projects/[^/]+/regions/[^/]+/serviceAttachments/[^/]+$" },
+        "name": { "type": "string" },
+        "ip_address": { "type": "string" },
+        "dns_domain": { "type": "string" }
+      }
+    },
+
+    "app": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "service": { "type": "object", "additionalProperties": { "$ref": "#/$defs/service" } },
+        "job": { "type": "object", "additionalProperties": { "$ref": "#/$defs/job" } }
+      }
+    },
+    "scheduler": {
+      "type": "object",
+      "description": "Cloud Scheduler entries that run an app.job.",
+      "additionalProperties": {
+        "type": "object",
+        "additionalProperties": true,
+        "required": ["schedule", "target_job"],
+        "properties": {
+          "schedule": { "type": "string" },
+          "target_job": { "type": "string" },
+          "description": { "type": "string" },
+          "time_zone": { "type": "string" },
+          "attempt_deadline": { "$ref": "#/$defs/duration" },
+          "retry_count": { "type": "integer", "minimum": 0 },
+          "paused": { "type": "boolean" },
+          "args": { "type": "array" },
+          "job_api": { "enum": ["v1", "v2"] },
+          "external_sa": { "type": "string" },
+          "custom_name": { "type": "string" }
+        }
+      }
+    },
+    "service_scheduler": {
+      "type": "object",
+      "description": "Cloud Scheduler entries that call a path of an app.service.",
+      "additionalProperties": {
+        "type": "object",
+        "additionalProperties": true,
+        "required": ["schedule", "target_service", "target_path"],
+        "properties": {
+          "schedule": { "type": "string" },
+          "target_service": { "type": "string" },
+          "target_path": { "type": "string" },
+          "time_zone": { "type": "string" },
+          "attempt_deadline": { "$ref": "#/$defs/duration" },
+          "retry_count": { "type": "integer", "minimum": 0 },
+          "external_sa": { "type": "string" }
+        }
+      }
+    },
+    "cloudbuild": {
+      "type": "object",
+      "description": "Standalone Cloud Build triggers (libraries, base images).",
+      "additionalProperties": { "$ref": "#/$defs/cloudbuild" }
+    },
+    "repo_providers": {
+      "type": "object",
+      "additionalProperties": true,
+      "description": "default names the provider; every other key is a provider config (owner, workspace, app_installation_id, connection_name).",
+      "properties": {
+        "default": { "enum": ["github", "bitbucket"] }
+      }
+    },
+    "bitbucket_workspace": { "type": "string" },
+    "bucket": { "type": "object", "additionalProperties": { "$ref": "#/$defs/bucket" } },
+    "database": { "type": "object", "additionalProperties": { "$ref": "#/$defs/database" } },
+    "redis": { "type": "object", "additionalProperties": { "$ref": "#/$defs/redis" } },
+    "firestore": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "object",
+        "additionalProperties": true,
+        "required": ["name", "type"],
+        "properties": {
+          "name": { "type": "string" },
+          "type": { "enum": ["FIRESTORE_NATIVE", "DATASTORE_MODE"] },
+          "location_id": { "type": "string" },
+          "point_in_time_recovery": { "type": "boolean", "description": "Default true in pro, false elsewhere." },
+          "delete_protection_state": { "enum": ["DELETE_PROTECTION_ENABLED", "DELETE_PROTECTION_DISABLED"], "description": "Default enabled in pro, unset (kept as the database has it) elsewhere." },
+          "deletion_policy": { "type": "string", "description": "ABANDON (provider default) or DELETE." },
+          "indexes_file": { "type": "string" },
+          "permissions": { "$ref": "#/$defs/permissionGroups" }
+        }
+      }
+    },
+    "pubsub": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "message_retention": { "$ref": "#/$defs/duration" },
+        "audience": { "type": "string" },
+        "topics": { "$ref": "#/$defs/openMap" }
+      }
+    },
+    "oracle": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Optional Oracle Cloud side. Absent: nothing is created.",
+      "properties": {
+        "compartment_id": { "type": "string" },
+        "networks": { "$ref": "#/$defs/openMap" },
+        "nsgs": { "$ref": "#/$defs/openMap" },
+        "instances": { "$ref": "#/$defs/openMap" }
+      }
+    },
+
+    "artifact_cleanup": { "type": "object", "additionalProperties": true, "description": "Cleanup policy merged over the Artifact Registry defaults." },
+    "artifact_repos": { "$ref": "#/$defs/openMap", "description": "Standalone Artifact Registry repositories." },
+    "build_submitter": { "type": "string" },
+    "cloud_tasks": { "$ref": "#/$defs/openMap" },
+    "cloudbuild_artifacts_admins": { "$ref": "#/$defs/members" },
+    "cloudbuild_sa_self_sign_jwt": { "type": "boolean" },
+    "compute_instances": { "$ref": "#/$defs/openMap" },
+    "compute_nats": { "$ref": "#/$defs/openMap" },
+    "dns_zones": { "$ref": "#/$defs/openMap" },
+    "domain_mappings": { "$ref": "#/$defs/openMap" },
+    "external_secret_access": { "$ref": "#/$defs/openMap" },
+    "secrets": { "$ref": "#/$defs/openMap", "description": "Standalone Secret Manager secrets (names only, never values)." }
+  },
+
+  "$defs": {
+    "strings": { "type": "array", "items": { "type": "string" } },
+    "members": { "type": "array", "items": { "type": "string", "pattern": "^(user|group|serviceAccount|domain|principal|principalSet|cloudrun|cloudrun_job|custom):.+$|^allUsers$|^allAuthenticatedUsers$" } },
+    "apis": { "type": "array", "items": { "type": "string", "pattern": "^[a-z0-9.-]+\\.googleapis\\.com$" } },
+    "duration": { "type": "string", "pattern": "^[0-9]+(\\.[0-9]+)?s$" },
+    "cidr": { "type": "string", "pattern": "^[0-9]{1,3}(\\.[0-9]{1,3}){3}/[0-9]{1,2}$" },
+    "severity": { "enum": ["CRITICAL", "ERROR", "WARNING"] },
+    "openMap": { "type": "object", "additionalProperties": { "type": "object", "additionalProperties": true } },
+    "projectRef": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id"],
+      "properties": {
+        "id": { "type": "string", "pattern": "^[a-z][a-z0-9-]{4,28}[a-z0-9]$" },
+        "name": { "type": "string" },
+        "number": { "type": ["string", "integer"], "pattern": "^[0-9]+$", "description": "Optional. Absent or all zeros: read from the project at plan time." }
+      }
+    },
+    "thresholdMap": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "object",
+        "additionalProperties": true,
+        "properties": {
+          "duration": { "$ref": "#/$defs/duration" },
+          "alignment_period": { "$ref": "#/$defs/duration" },
+          "threshold_value": { "type": ["number", "null"] },
+          "trigger_count_series": { "type": "integer" }
+        }
+      }
+    },
+    "lbAlert": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["duration", "threshold_value", "alignment_period", "severity", "enabled"],
+      "properties": {
+        "duration": { "$ref": "#/$defs/duration" },
+        "threshold_value": { "type": "number" },
+        "alignment_period": { "$ref": "#/$defs/duration" },
+        "severity": { "$ref": "#/$defs/severity" },
+        "enabled": { "type": "boolean" }
+      }
+    },
+    "logAlert": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "filter": { "type": "string" },
+        "description": { "type": "string" },
+        "severity": { "$ref": "#/$defs/severity" },
+        "notification_rate_limit": { "$ref": "#/$defs/duration" },
+        "auto_close": { "$ref": "#/$defs/duration" },
+        "excluded_principals": { "$ref": "#/$defs/strings" }
+      }
+    },
+    "uptimeCheck": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "host": { "type": "string" },
+        "path": { "type": "string" },
+        "port": { "type": "integer", "minimum": 1, "maximum": 65535 },
+        "use_ssl": { "type": "boolean" },
+        "period": { "enum": ["60s", "300s", "600s", "900s"] },
+        "timeout": { "$ref": "#/$defs/duration" },
+        "regions": {
+          "type": "array",
+          "items": { "enum": ["ASIA_PACIFIC", "EUROPE", "SOUTH_AMERICA", "USA_IOWA", "USA_OREGON", "USA_VIRGINIA"] }
+        },
+        "accepted_status_codes": {
+          "type": "array",
+          "items": { "type": ["string", "integer"], "pattern": "^[1-5]xx$" }
+        },
+        "content_matcher": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["content"],
+          "properties": {
+            "content": { "type": "string" },
+            "matcher": { "enum": ["CONTAINS_STRING", "NOT_CONTAINS_STRING", "MATCHES_REGEX", "NOT_MATCHES_REGEX"] }
+          }
+        },
+        "failing_regions": { "type": "integer", "minimum": 1 },
+        "severity": { "$ref": "#/$defs/severity" }
+      }
+    },
+    "wifPool": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "display_name": { "type": "string" },
+        "description": { "type": "string" },
+        "providers": { "type": "object", "additionalProperties": { "$ref": "#/$defs/wifProvider" } },
+        "bindings": { "type": "array", "items": { "$ref": "#/$defs/wifBinding" } }
+      }
+    },
+    "wifProvider": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["attribute_condition"],
+      "properties": {
+        "type": { "enum": ["github", "gitlab", "oidc"] },
+        "display_name": { "type": "string" },
+        "attribute_condition": { "type": "string" },
+        "issuer_uri": { "type": "string", "pattern": "^https://" },
+        "allowed_audiences": { "$ref": "#/$defs/strings" },
+        "attribute_mapping": { "type": "object", "additionalProperties": { "type": "string" } }
+      }
+    },
+    "wifBinding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["service_account", "principal_set"],
+      "properties": {
+        "service_account": { "type": "string" },
+        "principal_set": { "type": "string" },
+        "roles": { "$ref": "#/$defs/strings" }
+      }
+    },
+    "env": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": true,
+        "required": ["name"],
+        "properties": {
+          "name": { "type": "string" },
+          "value": { "type": ["string", "number", "boolean"] }
+        }
+      }
+    },
+    "secretRefs": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": true,
+        "required": ["name"],
+        "properties": {
+          "name": { "type": "string" },
+          "var_name": { "type": "string" },
+          "file_name": { "type": "string" },
+          "mount_path": { "type": "string" },
+          "version": { "type": ["string", "integer"] },
+          "create_secret": { "type": "boolean" },
+          "raw_name": { "type": "boolean" }
+        }
+      }
+    },
+    "permissionGroups": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["members", "roles"],
+        "properties": {
+          "members": { "$ref": "#/$defs/members" },
+          "roles": { "$ref": "#/$defs/strings" }
+        }
+      }
+    },
+    "cloudbuild": {
+      "type": "object",
+      "additionalProperties": true,
+      "description": "Trigger settings. Rendered by bin/cloudbuild-render.py, which reads further keys (docs/cloudbuild-pipeline.md).",
+      "properties": {
+        "name": { "type": "string" },
+        "repo_name": { "type": "string" },
+        "provider": { "enum": ["github", "bitbucket"] },
+        "inline": { "type": "boolean" },
+        "cloudbuild_file_path": { "type": "string" },
+        "dockerfile_path": { "type": "string" },
+        "build_context_path": { "type": "string" },
+        "build_args": { "type": "object", "additionalProperties": { "type": ["string", "number", "boolean"] } },
+        "substitutions": { "type": "object", "additionalProperties": { "type": ["string", "number", "boolean"] } },
+        "tag_pattern": { "type": "string" },
+        "branch_pattern": { "type": "string" },
+        "build_timeout": { "$ref": "#/$defs/duration" },
+        "deploy": { "type": "boolean" },
+        "artifact_format": { "enum": ["DOCKER", "MAVEN", "NPM", "PYTHON", "GO", "APT", "YUM"] },
+        "scan": { "type": "object", "additionalProperties": { "type": "boolean" } }
+      }
+    },
+    "service": {
+      "type": "object",
+      "additionalProperties": true,
+      "description": "One Cloud Run service. Known keys are typed; the Cloud Run module reads more.",
+      "properties": {
+        "name": { "type": "string", "pattern": "^[a-z][a-z0-9-]*$" },
+        "custom_name": { "type": "string" },
+        "loadbalancer": {
+          "type": "object",
+          "additionalProperties": true,
+          "properties": {
+            "rules": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["path"],
+                "properties": {
+                  "path": { "type": "string", "pattern": "^/" },
+                  "rewrite": { "type": "string" },
+                  "iap": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {
+                      "enabled": { "type": "boolean" },
+                      "use_default_members": { "type": "boolean" },
+                      "members": { "$ref": "#/$defs/members" }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "cloudbuild": { "$ref": "#/$defs/cloudbuild" },
+        "cloudrun": {
+          "type": "object",
+          "additionalProperties": true,
+          "properties": {
+            "allow_unauthenticated": { "type": "boolean" },
+            "ingress": { "enum": ["INGRESS_TRAFFIC_ALL", "INGRESS_TRAFFIC_INTERNAL_ONLY", "INGRESS_TRAFFIC_INTERNAL_LOAD_BALANCER"] },
+            "deletion_protection": { "type": "boolean" },
+            "min_instances": { "type": "integer", "minimum": 0 },
+            "max_instances": { "type": "integer", "minimum": 1 },
+            "concurrency": { "type": "integer", "minimum": 1 },
+            "container_port": { "type": "integer", "minimum": 1, "maximum": 65535 },
+            "timeout": { "$ref": "#/$defs/duration" },
+            "cpu": { "type": ["number", "string"] },
+            "ram": { "type": "string", "pattern": "^[0-9]+(Mi|Gi)$" },
+            "cpu_idle": { "type": "boolean" },
+            "vpc_access_enabled": { "type": "boolean" },
+            "vpc": {
+              "type": "object",
+              "additionalProperties": true,
+              "properties": { "egress": { "enum": ["ALL_TRAFFIC", "PRIVATE_RANGES_ONLY"] } }
+            },
+            "region": { "type": "string" },
+            "additional_roles": { "$ref": "#/$defs/strings" },
+            "annotations": { "type": "object", "additionalProperties": { "type": "string" } },
+            "cloud_sql_instances_mount": { "$ref": "#/$defs/strings" },
+            "db_host_from_database": { "type": "string" },
+            "env": { "$ref": "#/$defs/env" },
+            "secret_env": { "$ref": "#/$defs/secretRefs" },
+            "secret_volume": { "$ref": "#/$defs/secretRefs" },
+            "gcs_volume": { "type": "array", "items": { "type": "object", "additionalProperties": true, "required": ["name", "mount_path"] } }
+          }
+        }
+      }
+    },
+    "job": {
+      "type": "object",
+      "additionalProperties": true,
+      "description": "One Cloud Run job. Known keys are typed; other keys (IAM lists, cloudbuild) are allowed.",
+      "properties": {
+        "name": { "type": "string", "pattern": "^[a-z][a-z0-9-]*$" },
+        "custom_name": { "type": "string" },
+        "service_account": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "external": { "type": "boolean" },
+            "name": { "type": "string" }
+          }
+        },
+        "cloudbuild": { "$ref": "#/$defs/cloudbuild" },
+        "job-config": {
+          "type": "object",
+          "additionalProperties": true,
+          "properties": {
+            "image": { "type": "string" },
+            "parallelism": { "type": "integer", "minimum": 0 },
+            "task_count": { "type": "integer", "minimum": 1 },
+            "max_retries": { "type": "integer", "minimum": 0 },
+            "timeout": { "$ref": "#/$defs/duration" },
+            "launch_stage": { "enum": ["GA", "BETA", "ALPHA"] },
+            "cpu": { "type": ["number", "string"] },
+            "ram": { "type": "string", "pattern": "^[0-9]+(Mi|Gi)$" },
+            "deletion_protection": { "type": "boolean" },
+            "enable_vpc_access": { "type": "boolean" },
+            "command": { "$ref": "#/$defs/strings" },
+            "args": { "$ref": "#/$defs/strings" },
+            "cloud_sql_instances_mount": { "$ref": "#/$defs/strings" },
+            "env": { "$ref": "#/$defs/env" },
+            "secret_env": { "$ref": "#/$defs/secretRefs" },
+            "secret_volume": { "$ref": "#/$defs/secretRefs" },
+            "vpc_access": { "type": "object", "additionalProperties": true },
+            "containers": { "type": "array" }
+          }
+        }
+      }
+    },
+    "bucket": {
+      "type": "object",
+      "additionalProperties": true,
+      "description": "One bucket, passed to the storage module.",
+      "properties": {
+        "name": { "type": "string" },
+        "custom_name": { "type": "string" },
+        "region": { "type": "string" },
+        "class": { "enum": ["STANDARD", "REGIONAL", "MULTI_REGIONAL", "NEARLINE", "COLDLINE", "ARCHIVE"] },
+        "uniform_access": { "type": "boolean" },
+        "enable_versioning": { "type": "boolean" },
+        "soft_delete_days": { "type": "integer", "minimum": 0 },
+        "force_destroy": { "type": "boolean" },
+        "public_access_prevention": { "enum": ["enforced", "inherited"] },
+        "authoritative_permissions": { "type": "boolean" },
+        "use_random_suffix": { "type": "boolean" },
+        "cors": { "type": "array", "items": { "type": "object", "additionalProperties": true } },
+        "lifecycle_rules": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "object",
+            "additionalProperties": true,
+            "required": ["action_type"],
+            "properties": {
+              "action_type": { "enum": ["Delete", "SetStorageClass", "AbortIncompleteMultipartUpload"] },
+              "age": { "type": "integer", "minimum": 0 },
+              "days_since_noncurrent_time": { "type": "integer", "minimum": 1 },
+              "num_newer_versions": { "type": "integer", "minimum": 1 },
+              "prefixes": { "$ref": "#/$defs/strings" }
+            }
+          }
+        },
+        "retention_policy": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["retention_days"],
+          "properties": {
+            "retention_days": { "type": "integer", "minimum": 1, "maximum": 36499 },
+            "is_locked": { "type": "boolean" }
+          }
+        },
+        "access_logs": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["log_bucket"],
+          "properties": {
+            "log_bucket": { "type": "string" },
+            "log_object_prefix": { "type": "string" }
+          }
+        },
+        "permissions": { "$ref": "#/$defs/permissionGroups" },
+        "website": { "type": "object", "additionalProperties": true }
+      }
+    },
+    "database": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "sql"],
+      "properties": {
+        "name": { "type": "string", "pattern": "^[a-z][a-z0-9-]*$" },
+        "databases": { "type": "array", "items": { "type": ["string", "object"] } },
+        "users": { "type": "array", "items": { "type": ["string", "object"] } },
+        "sql": {
+          "type": "object",
+          "additionalProperties": true,
+          "description": "Passed whole to the Cloud SQL module (dbe).",
+          "required": ["version", "tier"],
+          "properties": {
+            "version": { "type": "string", "pattern": "^(POSTGRES|MYSQL|SQLSERVER)_" },
+            "tier": { "type": "string", "pattern": "^db-" },
+            "availability": { "enum": ["ZONAL", "REGIONAL"] },
+            "ipv4_enabled": { "type": "boolean" },
+            "ssl_mode": { "enum": ["ALLOW_UNENCRYPTED_AND_ENCRYPTED", "ENCRYPTED_ONLY", "TRUSTED_CLIENT_CERTIFICATE_REQUIRED"] },
+            "deletion_protection": { "type": "boolean" },
+            "binary_log_enabled": { "type": "boolean" },
+            "replica": { "type": "integer", "minimum": 0 },
+            "disk": {
+              "type": "object",
+              "additionalProperties": true,
+              "properties": {
+                "type": { "enum": ["PD_SSD", "PD_HDD"] },
+                "size": { "type": "integer", "minimum": 10 }
+              }
+            },
+            "flags": { "type": "object", "additionalProperties": { "type": ["string", "number"] } },
+            "special_password": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "enabled": { "type": "boolean" },
+                "characters": { "type": "string" }
+              }
+            },
+            "backup": {
+              "type": "object",
+              "additionalProperties": true,
+              "properties": {
+                "start_time": { "type": "string", "pattern": "^[0-2][0-9]:[0-5][0-9]$" },
+                "retained_backups": { "type": "integer", "minimum": 1 },
+                "location": { "type": "string" },
+                "point_in_time_recovery_enabled": { "type": "boolean" },
+                "transaction_log_retention_days": { "type": "integer", "minimum": 1, "maximum": 35 }
+              }
+            },
+            "maintenance": {
+              "type": "object",
+              "additionalProperties": true,
+              "properties": {
+                "day": { "type": "integer", "minimum": 1, "maximum": 7 },
+                "hour": { "type": "integer", "minimum": 0, "maximum": 23 }
+              }
+            },
+            "deny_maintenance_period": { "type": "object", "additionalProperties": true },
+            "insights": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "enabled": { "type": "boolean" },
+                "query_plans_per_minute": { "type": "integer", "minimum": 0, "maximum": 20 },
+                "query_string_length": { "type": "integer", "minimum": 256, "maximum": 4500 },
+                "record_application_tags": { "type": "boolean" },
+                "record_client_address": { "type": "boolean" }
+              }
+            },
+            "monitoring": { "$ref": "#/$defs/thresholdMap" }
+          }
+        }
+      }
+    },
+    "redis": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "memory_size_gb", "tier", "connect_mode"],
+      "properties": {
+        "name": { "type": "string", "pattern": "^[a-z][a-z0-9-]*$" },
+        "memory_size_gb": { "type": "integer", "minimum": 1, "maximum": 300 },
+        "tier": { "enum": ["BASIC", "STANDARD_HA"] },
+        "connect_mode": { "enum": ["PRIVATE_SERVICE_ACCESS", "DIRECT_PEERING"] },
+        "reserved_ip_range": { "type": "string" },
+        "auth_enabled": { "type": "boolean" },
+        "transit_encryption_mode": { "enum": ["DISABLED", "SERVER_AUTHENTICATION"] },
+        "redis_version": { "type": "string", "pattern": "^REDIS_[0-9]+_[0-9]+$" },
+        "deletion_protection": { "type": "boolean" },
+        "labels": { "type": "object", "additionalProperties": { "type": "string" } },
+        "redis_configs": { "type": "object", "additionalProperties": { "type": "string" } },
+        "persistence": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "persistence_mode": { "enum": ["RDB", "DISABLED"] },
+            "rdb_snapshot_period": { "enum": ["ONE_HOUR", "SIX_HOURS", "TWELVE_HOURS", "TWENTY_FOUR_HOURS"] },
+            "rdb_snapshot_start_time": { "type": "string", "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\\.[0-9]{1,9})?Z$" }
+          }
+        },
+        "maintenance_policy": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["day", "start_time"],
+          "properties": {
+            "day": { "enum": ["MONDAY", "TUESDAY", "WEDNESDAY", "THURSDAY", "FRIDAY", "SATURDAY", "SUNDAY"] },
+            "start_time": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["hours"],
+              "properties": {
+                "hours": { "type": "integer", "minimum": 0, "maximum": 23 },
+                "minutes": { "type": "integer", "minimum": 0, "maximum": 59 },
+                "seconds": { "type": "integer", "minimum": 0, "maximum": 59 },
+                "nanos": { "type": "integer", "minimum": 0 }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}
